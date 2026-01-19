@@ -51,4 +51,5 @@ output/
 .env
 .env.local
 
-507404429
+# Accidental SSH key files
+github_pat_*
