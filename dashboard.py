@@ -19,43 +19,6 @@ import os
 import json
 from ga4_pipeline import GA4Pipeline, load_config
 
-# Helper function to create GA4Pipeline with support for both file and secrets-based auth
-def create_pipeline(property_id: str, config: dict, service_account_path: str = None, date_range_days: int = 30):
-    """
-    Create GA4Pipeline instance using either file path or Streamlit secrets.
-    
-    Args:
-        property_id: GA4 Property ID
-        config: Configuration dictionary (may contain service_account_info from secrets)
-        service_account_path: Path to service account file (optional if using secrets)
-        date_range_days: Number of days for date range
-    
-    Returns:
-        GA4Pipeline instance
-    """
-    service_account_info = config.get('service_account_info')
-    if service_account_info and isinstance(service_account_info, dict) and len(service_account_info) > 0:
-        # Use Streamlit secrets (for cloud deployment)
-        # Explicitly don't pass service_account_path when using secrets
-        return GA4Pipeline(
-            property_id=property_id,
-            service_account_path=None,  # Explicitly None when using secrets
-            service_account_info=service_account_info,
-            date_range_days=date_range_days
-        )
-    else:
-        # Use file path (for local development)
-        # Ensure we have a valid path
-        file_path = service_account_path or config.get('service_account_path') or 'service-account-key.json'
-        if not file_path or file_path.strip() == '':
-            file_path = 'service-account-key.json'
-        return GA4Pipeline(
-            property_id=property_id,
-            service_account_path=file_path,
-            service_account_info=None,  # Explicitly None when using file
-            date_range_days=date_range_days
-        )
-
 # Page configuration
 st.set_page_config(
     page_title="GA4 Analytics Dashboard",
@@ -231,13 +194,13 @@ st.markdown("""
 
 
 @st.cache_data(ttl=3600)  # Cache for 1 hour
-def fetch_ga4_data(property_id: str, service_account_path: Optional[str] = None, days: Optional[int] = None, start_date: Optional[str] = None, end_date: Optional[str] = None):
+def fetch_ga4_data(property_id: str, service_account_path: str, days: Optional[int] = None, start_date: Optional[str] = None, end_date: Optional[str] = None):
     """
     Fetch GA4 data with caching to avoid repeated API calls.
     
     Args:
         property_id: GA4 Property ID
-        service_account_path: Path to service account JSON (optional if using Streamlit secrets)
+        service_account_path: Path to service account JSON
         days: Number of days to query (optional)
         start_date: Start date in YYYY-MM-DD format (optional)
         end_date: End date in YYYY-MM-DD format (optional)
@@ -248,10 +211,8 @@ def fetch_ga4_data(property_id: str, service_account_path: Optional[str] = None,
     try:
         # Use days if provided, otherwise use default
         default_days = days if days is not None else 30
-        config = load_config()
-        pipeline = create_pipeline(
+        pipeline = GA4Pipeline(
             property_id=property_id,
-            config=config,
             service_account_path=service_account_path,
             date_range_days=default_days
         )
@@ -275,10 +236,8 @@ def fetch_comparison_data(property_id: str, service_account_path: str, period_da
         Dictionary with revenue metrics
     """
     try:
-        config = load_config()
-        pipeline = create_pipeline(
+        pipeline = GA4Pipeline(
             property_id=property_id,
-            config=config,
             service_account_path=service_account_path,
             date_range_days=period_days
         )
@@ -306,10 +265,8 @@ def fetch_daily_users_for_period(property_id: str, service_account_path: str, pe
         List of daily user data dictionaries
     """
     try:
-        config = load_config()
-        pipeline = create_pipeline(
+        pipeline = GA4Pipeline(
             property_id=property_id,
-            config=config,
             service_account_path=service_account_path,
             date_range_days=period_days
         )
@@ -333,10 +290,8 @@ def fetch_daily_revenue_for_period(property_id: str, service_account_path: str, 
         List of daily revenue data dictionaries
     """
     try:
-        config = load_config()
-        pipeline = create_pipeline(
+        pipeline = GA4Pipeline(
             property_id=property_id,
-            config=config,
             service_account_path=service_account_path,
             date_range_days=period_days
         )
@@ -924,39 +879,6 @@ def main():
         # Load config
         config = load_config()
         
-        # Check if using Streamlit secrets (for cloud deployment)
-        service_account_info = config.get('service_account_info')
-        using_secrets = service_account_info is not None and isinstance(service_account_info, dict) and len(service_account_info) > 0
-        
-        # Debug: Check secrets availability
-        secrets_available = False
-        secrets_debug = []
-        try:
-            if hasattr(st, 'secrets') and st.secrets:
-                secrets_available = True
-                if 'ga4' in st.secrets:
-                    secrets_debug.append("✅ 'ga4' section found")
-                    ga4_secrets = st.secrets['ga4']
-                    if 'service_account' in ga4_secrets:
-                        secrets_debug.append("✅ 'service_account' found")
-                        sa_dict = ga4_secrets['service_account']
-                        if isinstance(sa_dict, dict):
-                            secrets_debug.append(f"✅ service_account is dict with {len(sa_dict)} keys")
-                            if 'private_key' in sa_dict:
-                                secrets_debug.append("✅ 'private_key' found")
-                            else:
-                                secrets_debug.append("❌ 'private_key' missing")
-                        else:
-                            secrets_debug.append(f"❌ service_account is not a dict: {type(sa_dict)}")
-                    else:
-                        secrets_debug.append("❌ 'service_account' not found in ga4 section")
-                else:
-                    secrets_debug.append("❌ 'ga4' section not found in secrets")
-            else:
-                secrets_debug.append("❌ Streamlit secrets not available")
-        except Exception as e:
-            secrets_debug.append(f"❌ Error checking secrets: {e}")
-        
         # Property ID input
         property_id = st.text_input(
             "GA4 Property ID",
@@ -964,23 +886,12 @@ def main():
             help="Enter your GA4 Property ID (numeric)"
         )
         
-        if using_secrets:
-            st.success("🔐 Using credentials from Streamlit secrets (cloud deployment)")
-            service_account_path = None  # Not needed when using secrets
-        else:
-            # Service account path (for local development)
-            # Show debug info if secrets are available but not being used
-            if secrets_available and not using_secrets:
-                with st.expander("🔍 Secrets Debug Info", expanded=False):
-                    for msg in secrets_debug:
-                        st.text(msg)
-                    st.info("If secrets are configured but not detected, check the TOML format matches exactly.")
-            
-            service_account_path = st.text_input(
-                "Service Account Key Path",
-                value=config.get('service_account_path', 'service-account-key.json'),
-                help="Path to your service account JSON key file (local development only)"
-            )
+        # Service account path
+        service_account_path = st.text_input(
+            "Service Account Key Path",
+            value=config.get('service_account_path', 'service-account-key.json'),
+            help="Path to your service account JSON key file"
+        )
         
         # Date range selection
         date_range_option = st.radio(
@@ -1039,16 +950,10 @@ def main():
         st.warning("Please enter your GA4 Property ID in the sidebar.")
         return
     
-    # Check if using secrets (cloud deployment)
-    config = load_config()
-    using_secrets = config.get('service_account_info') is not None and isinstance(config.get('service_account_info'), dict) and len(config.get('service_account_info', {})) > 0
-    
-    # Only validate file path if NOT using secrets
-    if not using_secrets:
-        if not service_account_path or not os.path.exists(service_account_path):
-            st.error(f"Service account key file not found: {service_account_path}")
-            st.info("Please make sure the service account JSON file exists in the specified path.")
-            return
+    if not os.path.exists(service_account_path):
+        st.error(f"Service account key file not found: {service_account_path}")
+        st.info("Please make sure the service account JSON file exists in the specified path.")
+        return
     
     # Fetch data
     with st.spinner("Fetching data from GA4..."):
