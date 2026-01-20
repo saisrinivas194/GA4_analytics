@@ -642,13 +642,22 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
                 secrets = st.secrets['ga4']
                 service_account_dict = secrets.get('service_account', {})
                 # Only use secrets if service_account is not empty
-                if service_account_dict and isinstance(service_account_dict, dict) and len(service_account_dict) > 0:
-                    config['property_id'] = secrets.get('property_id', '')
-                    config['service_account_info'] = dict(service_account_dict)
-                    config['date_range_days'] = secrets.get('date_range_days', 30)
-                    return config
-    except (ImportError, AttributeError, Exception):
+                # Check if it's a dict and has required fields
+                if service_account_dict:
+                    # Convert to dict if it's not already
+                    if not isinstance(service_account_dict, dict):
+                        service_account_dict = dict(service_account_dict)
+                    
+                    # Check if it has at least the required fields
+                    required_fields = ['type', 'project_id', 'private_key', 'client_email']
+                    if isinstance(service_account_dict, dict) and any(field in service_account_dict for field in required_fields):
+                        config['property_id'] = secrets.get('property_id', '')
+                        config['service_account_info'] = dict(service_account_dict)
+                        config['date_range_days'] = secrets.get('date_range_days', 30)
+                        return config
+    except (ImportError, AttributeError, Exception) as e:
         # Not running in Streamlit or secrets not available
+        # Silently fail - will fall back to file-based config
         pass
     
     # Try to load from file

@@ -928,6 +928,35 @@ def main():
         service_account_info = config.get('service_account_info')
         using_secrets = service_account_info is not None and isinstance(service_account_info, dict) and len(service_account_info) > 0
         
+        # Debug: Check secrets availability
+        secrets_available = False
+        secrets_debug = []
+        try:
+            if hasattr(st, 'secrets') and st.secrets:
+                secrets_available = True
+                if 'ga4' in st.secrets:
+                    secrets_debug.append("✅ 'ga4' section found")
+                    ga4_secrets = st.secrets['ga4']
+                    if 'service_account' in ga4_secrets:
+                        secrets_debug.append("✅ 'service_account' found")
+                        sa_dict = ga4_secrets['service_account']
+                        if isinstance(sa_dict, dict):
+                            secrets_debug.append(f"✅ service_account is dict with {len(sa_dict)} keys")
+                            if 'private_key' in sa_dict:
+                                secrets_debug.append("✅ 'private_key' found")
+                            else:
+                                secrets_debug.append("❌ 'private_key' missing")
+                        else:
+                            secrets_debug.append(f"❌ service_account is not a dict: {type(sa_dict)}")
+                    else:
+                        secrets_debug.append("❌ 'service_account' not found in ga4 section")
+                else:
+                    secrets_debug.append("❌ 'ga4' section not found in secrets")
+            else:
+                secrets_debug.append("❌ Streamlit secrets not available")
+        except Exception as e:
+            secrets_debug.append(f"❌ Error checking secrets: {e}")
+        
         # Property ID input
         property_id = st.text_input(
             "GA4 Property ID",
@@ -940,12 +969,12 @@ def main():
             service_account_path = None  # Not needed when using secrets
         else:
             # Service account path (for local development)
-            # Debug: Show why secrets aren't being used
-            if hasattr(st, 'secrets') and st.secrets:
-                if 'ga4' not in st.secrets:
-                    st.warning("⚠️ Streamlit secrets not found. Make sure you've added secrets in Streamlit Cloud → Settings → Secrets")
-                elif 'service_account' not in st.secrets.get('ga4', {}):
-                    st.warning("⚠️ service_account not found in secrets. Check your secrets format.")
+            # Show debug info if secrets are available but not being used
+            if secrets_available and not using_secrets:
+                with st.expander("🔍 Secrets Debug Info", expanded=False):
+                    for msg in secrets_debug:
+                        st.text(msg)
+                    st.info("If secrets are configured but not detected, check the TOML format matches exactly.")
             
             service_account_path = st.text_input(
                 "Service Account Key Path",
