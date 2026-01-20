@@ -19,6 +19,35 @@ import os
 import json
 from ga4_pipeline import GA4Pipeline, load_config
 
+# Helper function to create GA4Pipeline with support for both file and secrets-based auth
+def create_pipeline(property_id: str, config: dict, service_account_path: str = None, date_range_days: int = 30):
+    """
+    Create GA4Pipeline instance using either file path or Streamlit secrets.
+    
+    Args:
+        property_id: GA4 Property ID
+        config: Configuration dictionary (may contain service_account_info from secrets)
+        service_account_path: Path to service account file (optional if using secrets)
+        date_range_days: Number of days for date range
+    
+    Returns:
+        GA4Pipeline instance
+    """
+    if config.get('service_account_info'):
+        # Use Streamlit secrets (for cloud deployment)
+        return GA4Pipeline(
+            property_id=property_id,
+            service_account_info=config['service_account_info'],
+            date_range_days=date_range_days
+        )
+    else:
+        # Use file path (for local development)
+        return GA4Pipeline(
+            property_id=property_id,
+            service_account_path=service_account_path or config.get('service_account_path', 'service-account-key.json'),
+            date_range_days=date_range_days
+        )
+
 # Page configuration
 st.set_page_config(
     page_title="GA4 Analytics Dashboard",
@@ -211,8 +240,10 @@ def fetch_ga4_data(property_id: str, service_account_path: str, days: Optional[i
     try:
         # Use days if provided, otherwise use default
         default_days = days if days is not None else 30
-        pipeline = GA4Pipeline(
+        config = load_config()
+        pipeline = create_pipeline(
             property_id=property_id,
+            config=config,
             service_account_path=service_account_path,
             date_range_days=default_days
         )
@@ -236,8 +267,10 @@ def fetch_comparison_data(property_id: str, service_account_path: str, period_da
         Dictionary with revenue metrics
     """
     try:
-        pipeline = GA4Pipeline(
+        config = load_config()
+        pipeline = create_pipeline(
             property_id=property_id,
+            config=config,
             service_account_path=service_account_path,
             date_range_days=period_days
         )
@@ -265,8 +298,10 @@ def fetch_daily_users_for_period(property_id: str, service_account_path: str, pe
         List of daily user data dictionaries
     """
     try:
-        pipeline = GA4Pipeline(
+        config = load_config()
+        pipeline = create_pipeline(
             property_id=property_id,
+            config=config,
             service_account_path=service_account_path,
             date_range_days=period_days
         )
@@ -290,8 +325,10 @@ def fetch_daily_revenue_for_period(property_id: str, service_account_path: str, 
         List of daily revenue data dictionaries
     """
     try:
-        pipeline = GA4Pipeline(
+        config = load_config()
+        pipeline = create_pipeline(
             property_id=property_id,
+            config=config,
             service_account_path=service_account_path,
             date_range_days=period_days
         )

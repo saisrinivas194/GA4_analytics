@@ -39,7 +39,8 @@ class GA4Pipeline:
     def __init__(
         self,
         property_id: str,
-        service_account_path: str,
+        service_account_path: Optional[str] = None,
+        service_account_info: Optional[Dict[str, Any]] = None,
         date_range_days: int = 30
     ):
         """
@@ -47,11 +48,13 @@ class GA4Pipeline:
         
         Args:
             property_id: GA4 Property ID (numeric, e.g., "123456789")
-            service_account_path: Path to service account JSON key file
+            service_account_path: Path to service account JSON key file (optional if service_account_info provided)
+            service_account_info: Service account credentials as dict (for Streamlit secrets, optional if service_account_path provided)
             date_range_days: Number of days to query (default: 30)
         """
         self.property_id = property_id
         self.service_account_path = service_account_path
+        self.service_account_info = service_account_info
         self.date_range_days = date_range_days
         self.client = None
         
@@ -62,7 +65,14 @@ class GA4Pipeline:
                 "Do not use Measurement ID (G-XXXXXXXXXX)."
             )
         
-        if not os.path.exists(service_account_path):
+        # Validate that at least one authentication method is provided
+        if not service_account_path and not service_account_info:
+            raise ValueError(
+                "Either service_account_path or service_account_info must be provided"
+            )
+        
+        # If using file path, validate it exists
+        if service_account_path and not os.path.exists(service_account_path):
             raise FileNotFoundError(
                 f"Service account key file not found: {service_account_path}"
             )
@@ -73,21 +83,30 @@ class GA4Pipeline:
     def _authenticate(self) -> None:
         """
         Authenticate with Google Cloud using service account credentials.
+        Supports both file-based and dict-based (Streamlit secrets) authentication.
         
         Raises:
             GoogleAuthError: If authentication fails
         """
         try:
-            credentials = service_account.Credentials.from_service_account_file(
-                self.service_account_path,
-                scopes=['https://www.googleapis.com/auth/analytics.readonly']
-            )
+            if self.service_account_info:
+                # Use dict-based credentials (from Streamlit secrets)
+                credentials = service_account.Credentials.from_service_account_info(
+                    self.service_account_info,
+                    scopes=['https://www.googleapis.com/auth/analytics.readonly']
+                )
+            else:
+                # Use file-based credentials
+                credentials = service_account.Credentials.from_service_account_file(
+                    self.service_account_path,
+                    scopes=['https://www.googleapis.com/auth/analytics.readonly']
+                )
             
             self.client = BetaAnalyticsDataClient(credentials=credentials)
             
         except GoogleAuthError as e:
             raise GoogleAuthError(
-                f"Authentication failed. Please verify your service account key file: {e}"
+                f"Authentication failed. Please verify your service account credentials: {e}"
             )
         except Exception as e:
             raise Exception(f"Unexpected error during authentication: {e}")
@@ -603,7 +622,7 @@ class GA4Pipeline:
 
 def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     """
-    Load configuration from file or environment variables.
+    Load configuration from file, environment variables, or Streamlit secrets.
     
     Args:
         config_path: Path to config.json file (optional)
@@ -612,6 +631,20 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         Dictionary with configuration values
     """
     config = {}
+    
+    # Try to load from Streamlit secrets first (for cloud deployment)
+    try:
+        import streamlit as st
+        if hasattr(st, 'secrets') and st.secrets:
+            if 'ga4' in st.secrets:
+                secrets = st.secrets['ga4']
+                config['property_id'] = secrets.get('property_id', '')
+                config['service_account_info'] = dict(secrets.get('service_account', {}))
+                config['date_range_days'] = secrets.get('date_range_days', 30)
+                return config
+    except (ImportError, AttributeError):
+        # Not running in Streamlit or secrets not available
+        pass
     
     # Try to load from file
     if config_path and os.path.exists(config_path):
