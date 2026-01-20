@@ -71,11 +71,13 @@ class GA4Pipeline:
                 "Either service_account_path or service_account_info must be provided"
             )
         
-        # If using file path, validate it exists
-        if service_account_path and not os.path.exists(service_account_path):
-            raise FileNotFoundError(
-                f"Service account key file not found: {service_account_path}"
-            )
+        # If using file path (not secrets), validate it exists
+        # Only check file path if we're NOT using service_account_info
+        if service_account_path and not service_account_info:
+            if not os.path.exists(service_account_path):
+                raise FileNotFoundError(
+                    f"Service account key file not found: {service_account_path}"
+                )
         
         # Initialize client
         self._authenticate()
