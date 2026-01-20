@@ -194,13 +194,13 @@ st.markdown("""
 
 
 @st.cache_data(ttl=3600)  # Cache for 1 hour
-def fetch_ga4_data(property_id: str, service_account_path: str, days: Optional[int] = None, start_date: Optional[str] = None, end_date: Optional[str] = None):
+def fetch_ga4_data(property_id: str, service_account_path: Optional[str] = None, days: Optional[int] = None, start_date: Optional[str] = None, end_date: Optional[str] = None):
     """
     Fetch GA4 data with caching to avoid repeated API calls.
     
     Args:
         property_id: GA4 Property ID
-        service_account_path: Path to service account JSON
+        service_account_path: Path to service account JSON (optional if using Streamlit secrets)
         days: Number of days to query (optional)
         start_date: Start date in YYYY-MM-DD format (optional)
         end_date: End date in YYYY-MM-DD format (optional)
@@ -211,11 +211,21 @@ def fetch_ga4_data(property_id: str, service_account_path: str, days: Optional[i
     try:
         # Use days if provided, otherwise use default
         default_days = days if days is not None else 30
-        pipeline = GA4Pipeline(
-            property_id=property_id,
-            service_account_path=service_account_path,
-            date_range_days=default_days
-        )
+        config = load_config()
+        
+        # Use secrets if available, otherwise use file path
+        if config.get('service_account_info'):
+            pipeline = GA4Pipeline(
+                property_id=property_id,
+                service_account_info=config['service_account_info'],
+                date_range_days=default_days
+            )
+        else:
+            pipeline = GA4Pipeline(
+                property_id=property_id,
+                service_account_path=service_account_path or config.get('service_account_path', 'service-account-key.json'),
+                date_range_days=default_days
+            )
         data = pipeline.fetch_all_metrics(days=days, start_date=start_date, end_date=end_date)
         return data, None
     except Exception as e:
@@ -879,6 +889,9 @@ def main():
         # Load config
         config = load_config()
         
+        # Check if using Streamlit secrets
+        using_secrets = config.get('service_account_info') is not None
+        
         # Property ID input
         property_id = st.text_input(
             "GA4 Property ID",
@@ -886,12 +899,16 @@ def main():
             help="Enter your GA4 Property ID (numeric)"
         )
         
-        # Service account path
-        service_account_path = st.text_input(
-            "Service Account Key Path",
-            value=config.get('service_account_path', 'service-account-key.json'),
-            help="Path to your service account JSON key file"
-        )
+        # Service account path (only show if not using secrets)
+        if using_secrets:
+            st.info("🔐 Using credentials from Streamlit secrets")
+            service_account_path = None
+        else:
+            service_account_path = st.text_input(
+                "Service Account Key Path",
+                value=config.get('service_account_path', 'service-account-key.json'),
+                help="Path to your service account JSON key file"
+            )
         
         # Date range selection
         date_range_option = st.radio(
@@ -950,10 +967,16 @@ def main():
         st.warning("Please enter your GA4 Property ID in the sidebar.")
         return
     
-    if not os.path.exists(service_account_path):
-        st.error(f"Service account key file not found: {service_account_path}")
-        st.info("Please make sure the service account JSON file exists in the specified path.")
-        return
+    # Check if using secrets (reload config to be sure)
+    config_check = load_config()
+    using_secrets_check = config_check.get('service_account_info') is not None
+    
+    # Only validate file path if NOT using secrets
+    if not using_secrets_check:
+        if not service_account_path or not os.path.exists(service_account_path):
+            st.error(f"Service account key file not found: {service_account_path}")
+            st.info("Please make sure the service account JSON file exists in the specified path.")
+            return
     
     # Fetch data
     with st.spinner("Fetching data from GA4..."):
