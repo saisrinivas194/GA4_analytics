@@ -924,6 +924,10 @@ def main():
         # Load config
         config = load_config()
         
+        # Check if using Streamlit secrets (for cloud deployment)
+        service_account_info = config.get('service_account_info')
+        using_secrets = service_account_info is not None and isinstance(service_account_info, dict) and len(service_account_info) > 0
+        
         # Property ID input
         property_id = st.text_input(
             "GA4 Property ID",
@@ -931,14 +935,18 @@ def main():
             help="Enter your GA4 Property ID (numeric)"
         )
         
-        # Check if using Streamlit secrets (for cloud deployment)
-        using_secrets = config.get('service_account_info') is not None
-        
         if using_secrets:
-            st.info("🔐 Using credentials from Streamlit secrets (cloud deployment)")
+            st.success("🔐 Using credentials from Streamlit secrets (cloud deployment)")
             service_account_path = None  # Not needed when using secrets
         else:
             # Service account path (for local development)
+            # Debug: Show why secrets aren't being used
+            if hasattr(st, 'secrets') and st.secrets:
+                if 'ga4' not in st.secrets:
+                    st.warning("⚠️ Streamlit secrets not found. Make sure you've added secrets in Streamlit Cloud → Settings → Secrets")
+                elif 'service_account' not in st.secrets.get('ga4', {}):
+                    st.warning("⚠️ service_account not found in secrets. Check your secrets format.")
+            
             service_account_path = st.text_input(
                 "Service Account Key Path",
                 value=config.get('service_account_path', 'service-account-key.json'),
