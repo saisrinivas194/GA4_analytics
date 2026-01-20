@@ -34,32 +34,55 @@ After deployment, you need to add your GA4 service account credentials as secret
 ```toml
 [ga4]
 property_id = "YOUR_PROPERTY_ID"
+date_range_days = 30
 
 [ga4.service_account]
 type = "service_account"
 project_id = "your-project-id"
 private_key_id = "your-private-key-id"
-private_key = "-----BEGIN PRIVATE KEY-----\nYOUR_PRIVATE_KEY\n-----END PRIVATE KEY-----\n"
+private_key = "-----BEGIN PRIVATE KEY-----\\nYOUR_PRIVATE_KEY_HERE\\n-----END PRIVATE KEY-----\\n"
 client_email = "your-service-account@project.iam.gserviceaccount.com"
 client_id = "your-client-id"
 auth_uri = "https://accounts.google.com/o/oauth2/auth"
 token_uri = "https://oauth2.googleapis.com/token"
 auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
 client_x509_cert_url = "https://www.googleapis.com/robot/v1/metadata/x509/your-service-account%40project.iam.gserviceaccount.com"
-
-[ga4]
-date_range_days = 30
+universe_domain = "googleapis.com"
 ```
 
+**Important:** 
+- Replace `YOUR_PROPERTY_ID` with your numeric GA4 Property ID
+- Copy the `private_key` value from your JSON file **exactly as is** (it already has `\n` in it)
+- Copy all other values directly from your `service-account-key.json` file
+- The `private_key` in TOML should be the same as in JSON (with `\n` already included)
+
 **How to get these values:**
-- Open your `service-account-key.json` file
-- Copy all the values from the JSON file
-- Paste them into the secrets editor (make sure to keep the TOML format)
+
+1. Open your `service-account-key.json` file
+2. Copy each value and paste into the TOML format above
+3. For `property_id`: Use your numeric GA4 Property ID (found in GA4 Admin → Property Settings)
+
+**For the `private_key` field:**
+- Copy the ENTIRE `private_key` value from your JSON file (it's a long string)
+- The value already contains `\n` characters - **keep them exactly as they are**
+- In TOML, you can use triple quotes `"""` for multi-line strings, OR keep it as a single line
+- Example format (single line):
+  ```toml
+  private_key = "-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQChjAoFe1F5GbrP\\n...\\n-----END PRIVATE KEY-----\\n"
+  ```
+- Or use triple quotes (multi-line):
+  ```toml
+  private_key = """-----BEGIN PRIVATE KEY-----
+  MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQChjAoFe1F5GbrP
+  ...
+  -----END PRIVATE KEY-----
+  """
+  ```
 
 **Important Notes:**
-- The `private_key` must be on a single line with `\n` for newlines
-- Keep all quotes and special characters exactly as they appear
-- The `property_id` should be your numeric GA4 Property ID (not Measurement ID)
+- Copy ALL fields from your JSON file (including `universe_domain`)
+- The `property_id` should be your numeric GA4 Property ID (not Measurement ID like G-XXXXXXXXXX)
+- See `secrets.toml.example` for a template
 
 ### 4. Verify Deployment
 

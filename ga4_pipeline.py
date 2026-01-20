@@ -638,11 +638,14 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
         if hasattr(st, 'secrets') and st.secrets:
             if 'ga4' in st.secrets:
                 secrets = st.secrets['ga4']
-                config['property_id'] = secrets.get('property_id', '')
-                config['service_account_info'] = dict(secrets.get('service_account', {}))
-                config['date_range_days'] = secrets.get('date_range_days', 30)
-                return config
-    except (ImportError, AttributeError):
+                service_account_dict = secrets.get('service_account', {})
+                # Only use secrets if service_account is not empty
+                if service_account_dict and isinstance(service_account_dict, dict) and len(service_account_dict) > 0:
+                    config['property_id'] = secrets.get('property_id', '')
+                    config['service_account_info'] = dict(service_account_dict)
+                    config['date_range_days'] = secrets.get('date_range_days', 30)
+                    return config
+    except (ImportError, AttributeError, Exception):
         # Not running in Streamlit or secrets not available
         pass
     

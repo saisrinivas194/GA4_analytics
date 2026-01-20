@@ -33,18 +33,23 @@ def create_pipeline(property_id: str, config: dict, service_account_path: str = 
     Returns:
         GA4Pipeline instance
     """
-    if config.get('service_account_info'):
+    service_account_info = config.get('service_account_info')
+    if service_account_info and isinstance(service_account_info, dict) and len(service_account_info) > 0:
         # Use Streamlit secrets (for cloud deployment)
         return GA4Pipeline(
             property_id=property_id,
-            service_account_info=config['service_account_info'],
+            service_account_info=service_account_info,
             date_range_days=date_range_days
         )
     else:
         # Use file path (for local development)
+        # Ensure we have a valid path
+        file_path = service_account_path or config.get('service_account_path') or 'service-account-key.json'
+        if not file_path or file_path.strip() == '':
+            file_path = 'service-account-key.json'
         return GA4Pipeline(
             property_id=property_id,
-            service_account_path=service_account_path or config.get('service_account_path', 'service-account-key.json'),
+            service_account_path=file_path,
             date_range_days=date_range_days
         )
 
@@ -923,12 +928,19 @@ def main():
             help="Enter your GA4 Property ID (numeric)"
         )
         
-        # Service account path
-        service_account_path = st.text_input(
-            "Service Account Key Path",
-            value=config.get('service_account_path', 'service-account-key.json'),
-            help="Path to your service account JSON key file"
-        )
+        # Check if using Streamlit secrets (for cloud deployment)
+        using_secrets = config.get('service_account_info') is not None
+        
+        if using_secrets:
+            st.info("🔐 Using credentials from Streamlit secrets (cloud deployment)")
+            service_account_path = None  # Not needed when using secrets
+        else:
+            # Service account path (for local development)
+            service_account_path = st.text_input(
+                "Service Account Key Path",
+                value=config.get('service_account_path', 'service-account-key.json'),
+                help="Path to your service account JSON key file (local development only)"
+            )
         
         # Date range selection
         date_range_option = st.radio(
