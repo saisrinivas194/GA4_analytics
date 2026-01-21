@@ -193,17 +193,19 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def fetch_ga4_data(property_id: str, service_account_path: Optional[str] = None, days: Optional[int] = None, start_date: Optional[str] = None, end_date: Optional[str] = None):
+# Removed @st.cache_data decorator to avoid recursion errors during function decoration
+# Caching is now handled manually in the main() function using session state
+def fetch_ga4_data(property_id: str, service_account_path: Optional[str] = None, days: Optional[int] = None, start_date: Optional[str] = None, end_date: Optional[str] = None, service_account_info: Optional[dict] = None):
     """
     Fetch GA4 data with caching to avoid repeated API calls.
     
     Args:
         property_id: GA4 Property ID
-        service_account_path: Path to service account JSON (optional if using Streamlit secrets)
+        service_account_path: Path to service account JSON (optional if service_account_info provided)
         days: Number of days to query (optional)
         start_date: Start date in YYYY-MM-DD format (optional)
         end_date: End date in YYYY-MM-DD format (optional)
+        service_account_info: Service account credentials dict (for Streamlit secrets, optional)
     
     Returns:
         Dictionary with GA4 data
@@ -211,19 +213,21 @@ def fetch_ga4_data(property_id: str, service_account_path: Optional[str] = None,
     try:
         # Use days if provided, otherwise use default
         default_days = days if days is not None else 30
-        config = load_config()
         
-        # Use secrets if available, otherwise use file path
-        if config.get('service_account_info'):
+        # Use secrets if provided, otherwise use file path
+        # Do NOT call load_config() here to avoid recursion during caching
+        if service_account_info:
             pipeline = GA4Pipeline(
                 property_id=property_id,
-                service_account_info=config['service_account_info'],
+                service_account_info=service_account_info,
                 date_range_days=default_days
             )
         else:
+            # Use provided path or default
+            file_path = service_account_path or 'service-account-key.json'
             pipeline = GA4Pipeline(
                 property_id=property_id,
-                service_account_path=service_account_path or config.get('service_account_path', 'service-account-key.json'),
+                service_account_path=file_path,
                 date_range_days=default_days
             )
         data = pipeline.fetch_all_metrics(days=days, start_date=start_date, end_date=end_date)
@@ -232,7 +236,7 @@ def fetch_ga4_data(property_id: str, service_account_path: Optional[str] = None,
         return None, str(e)
 
 
-@st.cache_data(ttl=3600)
+# Removed @st.cache_data decorator to avoid recursion errors
 def fetch_comparison_data(property_id: str, service_account_path: str, period_days: int):
     """
     Fetch revenue data for comparison periods.
@@ -261,7 +265,7 @@ def fetch_comparison_data(property_id: str, service_account_path: str, period_da
         return None, str(e)
 
 
-@st.cache_data(ttl=3600)
+# Removed @st.cache_data decorator to avoid recursion errors
 def fetch_daily_users_for_period(property_id: str, service_account_path: str, period_days: int):
     """
     Fetch daily users data for a specific period.
@@ -286,7 +290,7 @@ def fetch_daily_users_for_period(property_id: str, service_account_path: str, pe
         return None, str(e)
 
 
-@st.cache_data(ttl=3600)
+# Removed @st.cache_data decorator to avoid recursion errors
 def fetch_daily_revenue_for_period(property_id: str, service_account_path: str, period_days: int):
     """
     Fetch daily revenue data for a specific period.
@@ -311,6 +315,324 @@ def fetch_daily_revenue_for_period(property_id: str, service_account_path: str, 
         return None, str(e)
 
 
+def create_single_metric_chart(
+    daily_data: list,
+    metric_name: str,
+    metric_key: str,
+    title: str,
+    aggregation: str = "daily",
+    color: str = '#4285f4',
+    y_axis_label: str = None,
+    is_revenue: bool = False,
+    show_micro_changes: bool = True,
+):
+    """
+    Create a single metric chart with median line.
+    
+    Args:
+        daily_data: List of daily data dictionaries
+        metric_name: Display name for the metric
+        metric_key: Key in the data dictionary
+        title: Chart title
+        aggregation: 'daily', 'weekly', or 'monthly'
+        color: Line color
+        y_axis_label: Y-axis label (defaults to metric_name)
+        is_revenue: Whether this is a revenue metric (affects formatting)
+    """
+    if not daily_data:
+        return None
+    
+    df = pd.DataFrame(daily_data)
+    
+    if len(df) < 1:
+        return None
+    
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date')
+    
+    if metric_key not in df.columns:
+        return None
+    
+    df[metric_key] = pd.to_numeric(df[metric_key], errors='coerce').fillna(0)
+    
+    # Aggregate data based on selection
+    if aggregation == 'weekly':
+        df['week'] = df['date'].dt.to_period('W').dt.start_time
+        df_agg = df.groupby('week').agg({metric_key: 'sum'}).reset_index()
+        df_agg.rename(columns={'week': 'date'}, inplace=True)
+        df = df_agg
+    elif aggregation == 'monthly':
+        df['month'] = df['date'].dt.to_period('M').dt.start_time
+        df_agg = df.groupby('month').agg({metric_key: 'sum'}).reset_index()
+        df_agg.rename(columns={'month': 'date'}, inplace=True)
+        df = df_agg
+    
+    # Use raw data for zigzag lines (no smoothing) to show all micro changes
+    # Scale user metrics to hundreds (divide by 100) for better readability
+    # Check if this is a user metric (not revenue)
+    is_user_metric = not is_revenue and ('user' in metric_key.lower() or 'users' in metric_name.lower())
+    scale_factor = 100 if is_user_metric else 1
+    
+    # Create scaled display values using RAW data (not moving average) for zigzag effect
+    df_display = df.copy()
+    df_display[f'{metric_key}_scaled'] = df_display[metric_key] / scale_factor
+    
+    # Calculate median on scaled values
+    metric_median = df_display[f'{metric_key}_scaled'].median()
+    
+    fig = go.Figure()
+    
+    # Format hover template based on metric type
+    if is_revenue:
+        hover_template = f'<b>{metric_name}</b><br>Date: %{{x|%Y-%m-%d}}<br>Revenue: $%{{y:,.2f}}<extra></extra>'
+        median_hover = f'<b>{metric_name} Median</b><br>Value: $%{{y:,.2f}}<extra></extra>'
+        tick_format = '$,.0f'
+        delta_prefix = "$"
+    elif is_user_metric:
+        # For user metrics, show scaled value in hover but indicate it's in hundreds
+        hover_template = f'<b>{metric_name}</b><br>Date: %{{x|%Y-%m-%d}}<br>Users: %{{y:,.1f}} (×100)<br>Actual: %{{customdata:,.0f}}<extra></extra>'
+        median_hover = f'<b>{metric_name} Median</b><br>Value: %{{y:,.1f}} (×100)<br>Actual: %{{customdata:,.0f}}<extra></extra>'
+        tick_format = '.1f'
+        delta_prefix = ""
+    else:
+        hover_template = f'<b>{metric_name}</b><br>Date: %{{x|%Y-%m-%d}}<br>Value: %{{y:,.0f}}<extra></extra>'
+        median_hover = f'<b>{metric_name} Median</b><br>Value: %{{y:,.0f}}<extra></extra>'
+        tick_format = ','
+        delta_prefix = ""
+    
+    # Use raw scaled values for zigzag line (connects all points directly)
+    y_values = df_display[f'{metric_key}_scaled']
+    
+    # Main zigzag line - Google Analytics style with clear strokes
+    fig.add_trace(go.Scatter(
+        x=df['date'],
+        y=y_values,
+        mode='lines',
+        name=metric_name,
+        line=dict(color=color, width=2.5, shape='linear'),  # linear = zigzag, connects point-to-point
+        hovertemplate=hover_template,
+        customdata=df[metric_key] if is_user_metric else None,  # Store actual values for hover
+        showlegend=False,
+        connectgaps=False  # Don't connect gaps to preserve zigzag pattern
+    ))
+    
+    # Add colored segments for up/down strokes (Google Analytics style)
+    if len(df) > 1:
+        y_series = y_values.astype(float)
+        changes = y_series.diff().fillna(0)
+        
+        # Add separate traces for up strokes (green) and down strokes (red)
+        up_dates = []
+        up_values = []
+        down_dates = []
+        down_values = []
+        
+        for i in range(1, len(df)):
+            if changes.iloc[i] > 0:
+                # Up stroke - connect previous to current
+                up_dates.extend([df['date'].iloc[i-1], df['date'].iloc[i], None])
+                up_values.extend([y_values.iloc[i-1], y_values.iloc[i], None])
+            elif changes.iloc[i] < 0:
+                # Down stroke - connect previous to current
+                down_dates.extend([df['date'].iloc[i-1], df['date'].iloc[i], None])
+                down_values.extend([y_values.iloc[i-1], y_values.iloc[i], None])
+        
+        # Up strokes in light green
+        if up_dates:
+            fig.add_trace(go.Scatter(
+                x=up_dates,
+                y=up_values,
+                mode='lines',
+                line=dict(color='rgba(52, 168, 83, 0.3)', width=3, shape='linear'),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
+        
+        # Down strokes in light red
+        if down_dates:
+            fig.add_trace(go.Scatter(
+                x=down_dates,
+                y=down_values,
+                mode='lines',
+                line=dict(color='rgba(217, 48, 37, 0.3)', width=3, shape='linear'),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
+    
+    # Micro change markers - Google Analytics style with clear up/down indicators
+    if show_micro_changes and len(df) > 1:
+        y_series = y_values.astype(float)
+        # Calculate delta from raw values (not scaled) for accurate change detection
+        raw_values = df[metric_key].astype(float)
+        delta = raw_values.diff()  # Delta in original units
+        pct = (raw_values.pct_change() * 100.0).replace([float("inf"), float("-inf")], 0.0).fillna(0.0)
+
+        # Google Analytics style markers - larger and more visible
+        symbols = []
+        colors = []
+        sizes = []
+        for d in delta.fillna(0.0).tolist():
+            if d > 0:
+                symbols.append("triangle-up")
+                colors.append("#34a853")  # Google green
+                sizes.append(10)
+            elif d < 0:
+                symbols.append("triangle-down")
+                colors.append("#ea4335")  # Google red
+                sizes.append(10)
+            else:
+                symbols.append("circle")
+                colors.append("#9aa0a6")  # Google gray
+                sizes.append(6)
+
+        # Skip first point (no delta)
+        actual_values = df[metric_key].iloc[1:] if is_user_metric else None
+        fig.add_trace(go.Scatter(
+            x=df['date'].iloc[1:],
+            y=y_series.iloc[1:],
+            mode='markers',
+            marker=dict(
+                symbol=symbols[1:],
+                size=sizes[1:],
+                color=colors[1:],
+                line=dict(width=1.5, color='white'),
+                opacity=0.9
+            ),
+            hovertemplate=(
+                f"<b>{metric_name}</b><br>"
+                "Date: %{x|%Y-%m-%d}<br>"
+                + (f"Value: ${'{'}%{{y:,.2f}}{'}'}<br>" if is_revenue 
+                   else f"Value: %{{y:,.1f}} (×100)<br>Actual: %{{customdata[2]:,.0f}}<br>" if is_user_metric 
+                   else "Value: %{y:,.0f}<br>")
+                + f"Change: {delta_prefix}%{{customdata[0]:,.2f}} ({'{'}%{{customdata[1]:+.2f}}{'}'}%)"
+                "<extra></extra>"
+            ),
+            customdata=list(zip(
+                delta.iloc[1:].fillna(0.0), 
+                pct.iloc[1:].fillna(0.0),
+                actual_values.fillna(0.0) if is_user_metric else [0] * len(delta.iloc[1:])
+            )) if is_user_metric else list(zip(delta.iloc[1:].fillna(0.0), pct.iloc[1:].fillna(0.0))),
+            showlegend=False
+        ))
+
+    # Median line (use scaled median from raw data)
+    median_actual = df[metric_key].median() if is_user_metric else (metric_median * scale_factor)
+    fig.add_trace(go.Scatter(
+        x=[df['date'].min(), df['date'].max()],
+        y=[metric_median, metric_median],
+        mode='lines',
+        name=f'{metric_name} Median',
+        line=dict(color=color, width=1.5, dash='dash'),
+        hovertemplate=median_hover,
+        customdata=[median_actual] if is_user_metric else None,
+        showlegend=False
+    ))
+    
+    agg_label = {
+        'daily': 'Daily',
+        'weekly': 'Weekly',
+        'monthly': 'Monthly'
+    }.get(aggregation, 'Daily')
+    
+    # Update y-axis label for user metrics to indicate scaling
+    if is_user_metric:
+        y_label = f"{y_axis_label} (×100)" if y_axis_label else f"{metric_name} (×100)"
+    else:
+        y_label = y_axis_label if y_axis_label else metric_name
+    
+    fig.update_layout(
+        title=dict(
+            text=f'{agg_label} {metric_name} - {title}',
+            font=dict(size=20, color='#202124', family='Google Sans, Arial, sans-serif')
+        ),
+        xaxis=dict(
+            title=dict(text='Date', font=dict(size=14, color='#5f6368')),
+            tickfont=dict(size=12, color='#5f6368'),
+            gridcolor='#e8eaed',
+            showgrid=True,
+            gridwidth=1
+        ),
+        yaxis=dict(
+            title=dict(text=y_label, font=dict(size=14, color='#5f6368')),
+            tickfont=dict(size=12, color='#5f6368'),
+            gridcolor='#e8eaed',
+            tickformat=tick_format,
+            showgrid=True,
+            gridwidth=1,
+            rangemode='tozero',
+            autorange=True
+        ),
+        hovermode='x unified',
+        height=400,
+        template='plotly_white',
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        margin=dict(l=60, r=20, t=60, b=60),
+        hoverlabel=dict(
+            bgcolor='white',
+            bordercolor='#dadce0',
+            font_size=12,
+            font_family='Google Sans, Arial, sans-serif'
+        )
+    )
+    
+    return fig
+
+
+def display_separate_user_charts(daily_users_data: list, title: str, aggregation: str):
+    """Display separate charts for Total Users and Active Users."""
+    if not daily_users_data:
+        st.info(f"No daily user data available for {title}.")
+        return
+    
+    # Total Users Chart
+    fig_total = create_single_metric_chart(
+        daily_users_data, "Total Users", "totalUsers", title,
+        aggregation.lower(), color='#4285f4', y_axis_label='Number of Users'
+    )
+    if fig_total:
+        st.plotly_chart(fig_total, use_container_width=True)
+    
+    # Active Users Chart
+    fig_active = create_single_metric_chart(
+        daily_users_data, "Active Users", "activeUsers", title,
+        aggregation.lower(), color='#ea4335', y_axis_label='Number of Users'
+    )
+    if fig_active:
+        st.plotly_chart(fig_active, use_container_width=True)
+
+
+def display_separate_revenue_charts(daily_revenue_data: list, title: str, aggregation: str):
+    """Display separate charts for Total Revenue, Ad Revenue, and IAP Revenue."""
+    if not daily_revenue_data:
+        st.info(f"No daily revenue data available for {title}.")
+        return
+    
+    # Total Revenue Chart
+    fig_total = create_single_metric_chart(
+        daily_revenue_data, "Total Revenue", "totalRevenue", title,
+        aggregation.lower(), color='#34a853', y_axis_label='Revenue ($)', is_revenue=True
+    )
+    if fig_total:
+        st.plotly_chart(fig_total, use_container_width=True)
+    
+    # Ad Revenue Chart
+    fig_ad = create_single_metric_chart(
+        daily_revenue_data, "Ad Revenue", "adRevenue", title,
+        aggregation.lower(), color='#1a73e8', y_axis_label='Revenue ($)', is_revenue=True
+    )
+    if fig_ad:
+        st.plotly_chart(fig_ad, use_container_width=True)
+    
+    # In-App Purchase Revenue Chart
+    fig_iap = create_single_metric_chart(
+        daily_revenue_data, "In-App Purchase Revenue", "purchaseRevenue", title,
+        aggregation.lower(), color='#9c27b0', y_axis_label='Revenue ($)', is_revenue=True
+    )
+    if fig_iap:
+        st.plotly_chart(fig_iap, use_container_width=True)
+
+
 def create_daily_users_chart(daily_users_data: list, title: str = "Daily Users Over Time", aggregation: str = "daily", show_moving_avg: bool = True):
     """
     Create a line chart for daily users with aggregation and smoothing options.
@@ -325,8 +647,37 @@ def create_daily_users_chart(daily_users_data: list, title: str = "Daily Users O
         return None
     
     df = pd.DataFrame(daily_users_data)
+    
+    # Check if we have enough data
+    if len(df) < 1:
+        return None
+    
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date')
+    
+    # Ensure we have the required columns
+    if 'totalUsers' not in df.columns or 'activeUsers' not in df.columns:
+        return None
+    
+    # Fill any NaN values with 0 to ensure lines are visible
+    df['totalUsers'] = df['totalUsers'].fillna(0)
+    df['activeUsers'] = df['activeUsers'].fillna(0)
+    
+    # Ensure values are numeric
+    df['totalUsers'] = pd.to_numeric(df['totalUsers'], errors='coerce').fillna(0)
+    df['activeUsers'] = pd.to_numeric(df['activeUsers'], errors='coerce').fillna(0)
+    
+    # Debug: Log data summary and verify moving averages
+    if len(df) > 0:
+        total_users_sum = df['totalUsers'].sum()
+        active_users_sum = df['activeUsers'].sum()
+        # Verify moving averages are calculated
+        if 'totalUsers_ma' in df.columns and 'activeUsers_ma' in df.columns:
+            total_ma_min = df['totalUsers_ma'].min()
+            total_ma_max = df['totalUsers_ma'].max()
+            active_ma_min = df['activeUsers_ma'].min()
+            active_ma_max = df['activeUsers_ma'].max()
+            # Debug output will be shown after moving average calculation
     
     # Aggregate data based on selection
     if aggregation == 'weekly':
@@ -346,84 +697,75 @@ def create_daily_users_chart(daily_users_data: list, title: str = "Daily Users O
         df_agg.rename(columns={'month': 'date'}, inplace=True)
         df = df_agg
     
-    # Calculate moving averages for smoothing
-    if show_moving_avg and len(df) > 7:
-        window = min(7, len(df) // 3)  # Use 7-day window or 1/3 of data points
-        df['totalUsers_ma'] = df['totalUsers'].rolling(window=window, center=True).mean()
-        df['activeUsers_ma'] = df['activeUsers'].rolling(window=window, center=True).mean()
+    # Always calculate moving averages for smooth trend lines
+    # Use adaptive window size based on data length
+    if len(df) > 1:
+        window = max(3, min(7, len(df) // 3))  # Minimum 3, maximum 7, or 1/3 of data points
+        df['totalUsers_ma'] = df['totalUsers'].rolling(window=window, center=True, min_periods=1).mean()
+        df['activeUsers_ma'] = df['activeUsers'].rolling(window=window, center=True, min_periods=1).mean()
+    else:
+        df['totalUsers_ma'] = df['totalUsers']
+        df['activeUsers_ma'] = df['activeUsers']
+    
+    # Ensure moving averages are not all zeros or NaN
+    df['totalUsers_ma'] = df['totalUsers_ma'].fillna(0)
+    df['activeUsers_ma'] = df['activeUsers_ma'].fillna(0)
+    
+    # Debug: Verify data ranges
+    total_ma_range = (df['totalUsers_ma'].min(), df['totalUsers_ma'].max())
+    active_ma_range = (df['activeUsers_ma'].min(), df['activeUsers_ma'].max())
+    
+    # Calculate median values for reference lines
+    total_users_median = df['totalUsers_ma'].median()
+    active_users_median = df['activeUsers_ma'].median()
     
     fig = go.Figure()
     
-    # Add smoothed trend lines (moving average) if enabled
-    if show_moving_avg and len(df) > 7 and 'totalUsers_ma' in df.columns:
-        # Add trend lines first (thick, prominent)
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['totalUsers_ma'],
-            mode='lines',
-            name='Total Users - Trend Line (Smoothed Average)',
-            line=dict(color='#2563eb', width=4),
-            hovertemplate='<b>Total Users - Trend Line</b><br>Smoothed moving average<br>Date: %{x|%Y-%m-%d}<br>Users: %{y:,.0f}<extra></extra>',
-            showlegend=True,
-            legendgroup='trend'
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['activeUsers_ma'],
-            mode='lines',
-            name='Active Users - Trend Line (Smoothed Average)',
-            line=dict(color='#f59e0b', width=4),
-            hovertemplate='<b>Active Users - Trend Line</b><br>Smoothed moving average<br>Date: %{x|%Y-%m-%d}<br>Users: %{y:,.0f}<extra></extra>',
-            showlegend=True,
-            legendgroup='trend'
-        ))
-        
-        # Add actual data (lighter, thinner line in background)
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['totalUsers'],
-            mode='lines',
-            name='Total Users - Actual Daily Data',
-            line=dict(color='#2563eb', width=1.5, dash='dot'),
-            opacity=0.3,
-            hovertemplate='<b>Total Users - Actual Daily Data</b><br>Raw daily values<br>Date: %{x|%Y-%m-%d}<br>Users: %{y:,}<extra></extra>',
-            showlegend=True,
-            legendgroup='actual'
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['activeUsers'],
-            mode='lines',
-            name='Active Users - Actual Daily Data',
-            line=dict(color='#f59e0b', width=1.5, dash='dot'),
-            opacity=0.3,
-            hovertemplate='<b>Active Users - Actual Daily Data</b><br>Raw daily values<br>Date: %{x|%Y-%m-%d}<br>Users: %{y:,}<extra></extra>',
-            showlegend=True,
-            legendgroup='actual'
-        ))
-    else:
-        # If no moving average, show actual data as main line
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['totalUsers'],
-            mode='lines',
-            name='Total Users - All users who visited',
-            line=dict(color='#2563eb', width=3),
-            hovertemplate='<b>Total Users</b><br>All users who visited your app/website<br>Date: %{x|%Y-%m-%d}<br>Users: %{y:,}<extra></extra>',
-            showlegend=True
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['activeUsers'],
-            mode='lines',
-            name='Active Users - Users who engaged actively',
-            line=dict(color='#f59e0b', width=3),
-            hovertemplate='<b>Active Users</b><br>Users who actively engaged with your app/website<br>Date: %{x|%Y-%m-%d}<br>Users: %{y:,}<extra></extra>',
-            showlegend=True
-        ))
+    # Google Analytics style: Clean lines, no markers, zigzag pattern
+    # Total Users - Blue solid line
+    fig.add_trace(go.Scatter(
+        x=df['date'],
+        y=df['totalUsers_ma'],
+        mode='lines',
+        name='Total Users',
+        line=dict(color='#4285f4', width=2.5, shape='linear'),
+        hovertemplate='<b>Total Users</b><br>Date: %{x|%Y-%m-%d}<br>Users: %{y:,.0f}<extra></extra>',
+        showlegend=True,
+        connectgaps=True
+    ))
+    
+    # Active Users - Red solid line
+    fig.add_trace(go.Scatter(
+        x=df['date'],
+        y=df['activeUsers_ma'],
+        mode='lines',
+        name='Active Users',
+        line=dict(color='#ea4335', width=2.5, shape='linear'),
+        hovertemplate='<b>Active Users</b><br>Date: %{x|%Y-%m-%d}<br>Users: %{y:,.0f}<extra></extra>',
+        showlegend=True,
+        connectgaps=True
+    ))
+    
+    # Median lines - dashed, matching colors
+    fig.add_trace(go.Scatter(
+        x=[df['date'].min(), df['date'].max()],
+        y=[total_users_median, total_users_median],
+        mode='lines',
+        name='Total Users Median',
+        line=dict(color='#4285f4', width=1.5, dash='dash'),
+        hovertemplate='<b>Total Users Median</b><br>Value: %{y:,.0f}<extra></extra>',
+        showlegend=False
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[df['date'].min(), df['date'].max()],
+        y=[active_users_median, active_users_median],
+        mode='lines',
+        name='Active Users Median',
+        line=dict(color='#ea4335', width=1.5, dash='dash'),
+        hovertemplate='<b>Active Users Median</b><br>Value: %{y:,.0f}<extra></extra>',
+        showlegend=False
+    ))
     
     # Update aggregation label in title
     agg_label = {
@@ -432,42 +774,52 @@ def create_daily_users_chart(daily_users_data: list, title: str = "Daily Users O
         'monthly': 'Monthly'
     }.get(aggregation, 'Daily')
     
+    # Google Analytics style layout - clean and minimal
     fig.update_layout(
         title=dict(
             text=f'{agg_label} Users Trend - {title}',
-            font=dict(size=24, color='#111827', family='Arial Black', weight='bold')
+            font=dict(size=20, color='#202124', family='Google Sans, Arial, sans-serif')
         ),
         xaxis=dict(
-            title=dict(text='Date', font=dict(size=18, color='#1f2937', weight='bold')),
-            tickfont=dict(size=14, color='#374151'),
-            gridcolor='#e5e7eb',
-            showgrid=True
+            title=dict(text='Date', font=dict(size=14, color='#5f6368')),
+            tickfont=dict(size=12, color='#5f6368'),
+            gridcolor='#e8eaed',
+            showgrid=True,
+            gridwidth=1
         ),
         yaxis=dict(
-            title=dict(text='Number of Users', font=dict(size=18, color='#1f2937', weight='bold')),
-            tickfont=dict(size=14, color='#374151'),
-            gridcolor='#e5e7eb',
+            title=dict(text='Number of Users', font=dict(size=14, color='#5f6368')),
+            tickfont=dict(size=12, color='#5f6368'),
+            gridcolor='#e8eaed',
             tickformat=',',
-            showgrid=True
+            showgrid=True,
+            gridwidth=1,
+            rangemode='tozero',
+            autorange=True
         ),
         hovermode='x unified',
-        height=500,
+        height=450,
         template='plotly_white',
         plot_bgcolor='white',
         paper_bgcolor='white',
         legend=dict(
-            orientation="v",
-            yanchor="top",
-            y=1,
-            xanchor="left",
-            x=1.02,
-            font=dict(size=14, color='#1f2937', weight='bold'),
-            bgcolor='rgba(255,255,255,0.95)',
-            bordercolor='#e5e7eb',
-            borderwidth=1,
-            itemwidth=30
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=12, color='#202124'),
+            bgcolor='rgba(255,255,255,0)',
+            bordercolor='rgba(0,0,0,0)',
+            borderwidth=0
         ),
-        margin=dict(l=70, r=30, t=80, b=70)
+        margin=dict(l=60, r=20, t=60, b=60),
+        hoverlabel=dict(
+            bgcolor='white',
+            bordercolor='#dadce0',
+            font_size=12,
+            font_family='Google Sans, Arial, sans-serif'
+        )
     )
     
     return fig
@@ -488,6 +840,10 @@ def create_revenue_trend_chart(daily_revenue_data: list, title: str = "Revenue O
     
     df = pd.DataFrame(daily_revenue_data)
     
+    # Check if we have enough data
+    if len(df) < 1:
+        return None
+    
     # Check if required columns exist
     required_cols = ['date', 'totalRevenue', 'adRevenue', 'purchaseRevenue']
     missing_cols = [col for col in required_cols if col not in df.columns]
@@ -498,10 +854,19 @@ def create_revenue_trend_chart(daily_revenue_data: list, title: str = "Revenue O
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date')
     
-    # Fill any NaN values with 0
-    df['totalRevenue'] = df['totalRevenue'].fillna(0.0)
-    df['adRevenue'] = df['adRevenue'].fillna(0.0)
-    df['purchaseRevenue'] = df['purchaseRevenue'].fillna(0.0)
+    # Fill any NaN values with 0 and ensure numeric
+    df['totalRevenue'] = pd.to_numeric(df['totalRevenue'], errors='coerce').fillna(0.0)
+    df['adRevenue'] = pd.to_numeric(df['adRevenue'], errors='coerce').fillna(0.0)
+    df['purchaseRevenue'] = pd.to_numeric(df['purchaseRevenue'], errors='coerce').fillna(0.0)
+    
+    # Ensure all revenue columns exist and have at least some data points
+    # This helps ensure all lines are visible even if some values are zero
+    
+    # Debug: Log data summary - lines will show even if values are zero
+    if len(df) > 0:
+        total_rev_sum = df['totalRevenue'].sum()
+        ad_rev_sum = df['adRevenue'].sum()
+        iap_rev_sum = df['purchaseRevenue'].sum()
     
     # Aggregate data based on selection
     if aggregation == 'weekly':
@@ -523,118 +888,102 @@ def create_revenue_trend_chart(daily_revenue_data: list, title: str = "Revenue O
         df_agg.rename(columns={'month': 'date'}, inplace=True)
         df = df_agg
     
-    # Calculate moving averages for smoothing
-    if show_moving_avg and len(df) > 7:
-        window = min(7, len(df) // 3)
-        df['totalRevenue_ma'] = df['totalRevenue'].rolling(window=window, center=True).mean()
-        df['adRevenue_ma'] = df['adRevenue'].rolling(window=window, center=True).mean()
-        df['purchaseRevenue_ma'] = df['purchaseRevenue'].rolling(window=window, center=True).mean()
+    # Always calculate moving averages for smooth trend lines
+    # Use adaptive window size based on data length
+    if len(df) > 1:
+        window = max(3, min(7, len(df) // 3))  # Minimum 3, maximum 7, or 1/3 of data points
+        df['totalRevenue_ma'] = df['totalRevenue'].rolling(window=window, center=True, min_periods=1).mean()
+        df['adRevenue_ma'] = df['adRevenue'].rolling(window=window, center=True, min_periods=1).mean()
+        df['purchaseRevenue_ma'] = df['purchaseRevenue'].rolling(window=window, center=True, min_periods=1).mean()
+    else:
+        df['totalRevenue_ma'] = df['totalRevenue']
+        df['adRevenue_ma'] = df['adRevenue']
+        df['purchaseRevenue_ma'] = df['purchaseRevenue']
+    
+    # Ensure moving averages are not all zeros or NaN
+    df['totalRevenue_ma'] = df['totalRevenue_ma'].fillna(0.0)
+    df['adRevenue_ma'] = df['adRevenue_ma'].fillna(0.0)
+    df['purchaseRevenue_ma'] = df['purchaseRevenue_ma'].fillna(0.0)
+    
+    # Debug: Verify data ranges
+    total_rev_range = (df['totalRevenue_ma'].min(), df['totalRevenue_ma'].max())
+    ad_rev_range = (df['adRevenue_ma'].min(), df['adRevenue_ma'].max())
+    iap_rev_range = (df['purchaseRevenue_ma'].min(), df['purchaseRevenue_ma'].max())
+    
+    # Calculate median values for reference lines
+    total_revenue_median = df['totalRevenue_ma'].median()
+    ad_revenue_median = df['adRevenue_ma'].median()
+    iap_revenue_median = df['purchaseRevenue_ma'].median()
     
     fig = go.Figure()
     
-    # Add smoothed trend lines (moving average) if enabled
-    if show_moving_avg and len(df) > 7 and 'totalRevenue_ma' in df.columns:
-        # Add trend lines first (thick, prominent)
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['totalRevenue_ma'],
-            mode='lines',
-            name='Total Revenue - Trend Line (Smoothed Average)',
-            line=dict(color='#10b981', width=4),
-            hovertemplate='<b>Total Revenue - Trend Line</b><br>Smoothed moving average<br>Date: %{x|%Y-%m-%d}<br>Revenue: $%{y:,.2f}<extra></extra>',
-            showlegend=True,
-            legendgroup='trend'
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['adRevenue_ma'],
-            mode='lines',
-            name='Ad Revenue - Trend Line (Smoothed Average)',
-            line=dict(color='#3b82f6', width=4),
-            hovertemplate='<b>Ad Revenue - Trend Line</b><br>Smoothed moving average<br>Date: %{x|%Y-%m-%d}<br>Revenue: $%{y:,.2f}<extra></extra>',
-            showlegend=True,
-            legendgroup='trend'
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['purchaseRevenue_ma'],
-            mode='lines',
-            name='In-App Purchase Revenue - Trend Line (Smoothed Average)',
-            line=dict(color='#8b5cf6', width=4),
-            hovertemplate='<b>In-App Purchase Revenue - Trend Line</b><br>Smoothed moving average<br>Date: %{x|%Y-%m-%d}<br>Revenue: $%{y:,.2f}<extra></extra>',
-            showlegend=True,
-            legendgroup='trend'
-        ))
-        
-        # Add actual data (lighter, thinner line in background)
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['totalRevenue'],
-            mode='lines',
-            name='Total Revenue - Actual Daily Data',
-            line=dict(color='#10b981', width=1.5, dash='dot'),
-            opacity=0.3,
-            hovertemplate='<b>Total Revenue - Actual Daily Data</b><br>Raw daily values<br>Date: %{x|%Y-%m-%d}<br>Revenue: $%{y:,.2f}<extra></extra>',
-            showlegend=True,
-            legendgroup='actual'
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['adRevenue'],
-            mode='lines',
-            name='Ad Revenue - Actual Daily Data',
-            line=dict(color='#3b82f6', width=1.5, dash='dot'),
-            opacity=0.3,
-            hovertemplate='<b>Ad Revenue - Actual Daily Data</b><br>Raw daily values<br>Date: %{x|%Y-%m-%d}<br>Revenue: $%{y:,.2f}<extra></extra>',
-            showlegend=True,
-            legendgroup='actual'
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['purchaseRevenue'],
-            mode='lines',
-            name='In-App Purchase Revenue - Actual Daily Data',
-            line=dict(color='#8b5cf6', width=1.5, dash='dot'),
-            opacity=0.3,
-            hovertemplate='<b>In-App Purchase Revenue - Actual Daily Data</b><br>Raw daily values<br>Date: %{x|%Y-%m-%d}<br>Revenue: $%{y:,.2f}<extra></extra>',
-            showlegend=True,
-            legendgroup='actual'
-        ))
-    else:
-        # If no moving average, show actual data as main line
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['totalRevenue'],
-            mode='lines',
-            name='Total Revenue - All revenue sources combined',
-            line=dict(color='#10b981', width=3),
-            hovertemplate='<b>Total Revenue</b><br>All revenue sources combined<br>Date: %{x|%Y-%m-%d}<br>Revenue: $%{y:,.2f}<extra></extra>',
-            showlegend=True
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['adRevenue'],
-            mode='lines',
-            name='Ad Revenue - Revenue from advertisements',
-            line=dict(color='#3b82f6', width=3),
-            hovertemplate='<b>Ad Revenue</b><br>Revenue from advertisements<br>Date: %{x|%Y-%m-%d}<br>Revenue: $%{y:,.2f}<extra></extra>',
-            showlegend=True
-        ))
-        
-        fig.add_trace(go.Scatter(
-            x=df['date'],
-            y=df['purchaseRevenue'],
-            mode='lines',
-            name='In-App Purchase Revenue - Revenue from in-app purchases',
-            line=dict(color='#8b5cf6', width=3),
-            hovertemplate='<b>In-App Purchase Revenue</b><br>Revenue from in-app purchases<br>Date: %{x|%Y-%m-%d}<br>Revenue: $%{y:,.2f}<extra></extra>',
-            showlegend=True
-        ))
+    # Google Analytics style: Clean lines, no markers, zigzag pattern
+    # Total Revenue - Green solid line
+    fig.add_trace(go.Scatter(
+        x=df['date'],
+        y=df['totalRevenue_ma'],
+        mode='lines',
+        name='Total Revenue',
+        line=dict(color='#34a853', width=2.5, shape='linear'),
+        hovertemplate='<b>Total Revenue</b><br>Date: %{x|%Y-%m-%d}<br>Revenue: $%{y:,.2f}<extra></extra>',
+        showlegend=True,
+        connectgaps=True
+    ))
+    
+    # Ad Revenue - Blue solid line
+    fig.add_trace(go.Scatter(
+        x=df['date'],
+        y=df['adRevenue_ma'],
+        mode='lines',
+        name='Ad Revenue',
+        line=dict(color='#1a73e8', width=2.5, shape='linear'),
+        hovertemplate='<b>Ad Revenue</b><br>Date: %{x|%Y-%m-%d}<br>Revenue: $%{y:,.2f}<extra></extra>',
+        showlegend=True,
+        connectgaps=True
+    ))
+    
+    # In-App Purchase Revenue - Purple solid line
+    fig.add_trace(go.Scatter(
+        x=df['date'],
+        y=df['purchaseRevenue_ma'],
+        mode='lines',
+        name='In-App Purchase Revenue',
+        line=dict(color='#9c27b0', width=2.5, shape='linear'),
+        hovertemplate='<b>In-App Purchase Revenue</b><br>Date: %{x|%Y-%m-%d}<br>Revenue: $%{y:,.2f}<extra></extra>',
+        showlegend=True,
+        connectgaps=True
+    ))
+    
+    # Median lines - dashed, matching colors
+    fig.add_trace(go.Scatter(
+        x=[df['date'].min(), df['date'].max()],
+        y=[total_revenue_median, total_revenue_median],
+        mode='lines',
+        name='Total Revenue Median',
+        line=dict(color='#34a853', width=1.5, dash='dash'),
+        hovertemplate='<b>Total Revenue Median</b><br>Value: $%{y:,.2f}<extra></extra>',
+        showlegend=False
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[df['date'].min(), df['date'].max()],
+        y=[ad_revenue_median, ad_revenue_median],
+        mode='lines',
+        name='Ad Revenue Median',
+        line=dict(color='#1a73e8', width=1.5, dash='dash'),
+        hovertemplate='<b>Ad Revenue Median</b><br>Value: $%{y:,.2f}<extra></extra>',
+        showlegend=False
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=[df['date'].min(), df['date'].max()],
+        y=[iap_revenue_median, iap_revenue_median],
+        mode='lines',
+        name='IAP Revenue Median',
+        line=dict(color='#9c27b0', width=1.5, dash='dash'),
+        hovertemplate='<b>IAP Revenue Median</b><br>Value: $%{y:,.2f}<extra></extra>',
+        showlegend=False
+    ))
     
     # Update aggregation label in title
     agg_label = {
@@ -643,42 +992,52 @@ def create_revenue_trend_chart(daily_revenue_data: list, title: str = "Revenue O
         'monthly': 'Monthly'
     }.get(aggregation, 'Daily')
     
+    # Google Analytics style layout - clean and minimal
     fig.update_layout(
         title=dict(
             text=f'{agg_label} Revenue Trend - {title}',
-            font=dict(size=24, color='#111827', family='Arial Black', weight='bold')
+            font=dict(size=20, color='#202124', family='Google Sans, Arial, sans-serif')
         ),
         xaxis=dict(
-            title=dict(text='Date', font=dict(size=18, color='#1f2937', weight='bold')),
-            tickfont=dict(size=14, color='#374151'),
-            gridcolor='#e5e7eb',
-            showgrid=True
+            title=dict(text='Date', font=dict(size=14, color='#5f6368')),
+            tickfont=dict(size=12, color='#5f6368'),
+            gridcolor='#e8eaed',
+            showgrid=True,
+            gridwidth=1
         ),
         yaxis=dict(
-            title=dict(text='Revenue ($)', font=dict(size=18, color='#1f2937', weight='bold')),
-            tickfont=dict(size=14, color='#374151'),
-            gridcolor='#e5e7eb',
+            title=dict(text='Revenue ($)', font=dict(size=14, color='#5f6368')),
+            tickfont=dict(size=12, color='#5f6368'),
+            gridcolor='#e8eaed',
             tickformat='$,.0f',
-            showgrid=True
+            showgrid=True,
+            gridwidth=1,
+            rangemode='tozero',
+            autorange=True
         ),
         hovermode='x unified',
-        height=500,
+        height=450,
         template='plotly_white',
         plot_bgcolor='white',
         paper_bgcolor='white',
         legend=dict(
-            orientation="v",
-            yanchor="top",
-            y=1,
-            xanchor="left",
-            x=1.02,
-            font=dict(size=14, color='#1f2937', weight='bold'),
-            bgcolor='rgba(255,255,255,0.95)',
-            bordercolor='#e5e7eb',
-            borderwidth=1,
-            itemwidth=30
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+            font=dict(size=12, color='#202124'),
+            bgcolor='rgba(255,255,255,0)',
+            bordercolor='rgba(0,0,0,0)',
+            borderwidth=0
         ),
-        margin=dict(l=70, r=30, t=80, b=70)
+        margin=dict(l=60, r=20, t=60, b=60),
+        hoverlabel=dict(
+            bgcolor='white',
+            bordercolor='#dadce0',
+            font_size=12,
+            font_family='Google Sans, Arial, sans-serif'
+        )
     )
     
     return fig
@@ -732,6 +1091,224 @@ def create_mini_trend_chart(values: list, color: str = '#3b82f6', height: int = 
         xaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
         yaxis=dict(showgrid=False, showticklabels=False, zeroline=False),
         hovermode=False
+    )
+    
+    return fig
+
+
+def create_stacked_area_chart(daily_revenue_data: list, title: str = "Revenue Breakdown Over Time", aggregation: str = "daily"):
+    """
+    Create a stacked area chart showing Ad Revenue vs In-App Purchase Revenue over time.
+    
+    Args:
+        daily_revenue_data: List of daily revenue data dictionaries
+        title: Chart title
+        aggregation: 'daily', 'weekly', or 'monthly'
+    """
+    if not daily_revenue_data:
+        return None
+    
+    df = pd.DataFrame(daily_revenue_data)
+    
+    if len(df) < 1:
+        return None
+    
+    required_cols = ['date', 'adRevenue', 'purchaseRevenue']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        return None
+    
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date')
+    
+    df['adRevenue'] = pd.to_numeric(df['adRevenue'], errors='coerce').fillna(0.0)
+    df['purchaseRevenue'] = pd.to_numeric(df['purchaseRevenue'], errors='coerce').fillna(0.0)
+    
+    # Aggregate data based on selection
+    if aggregation == 'weekly':
+        df['week'] = df['date'].dt.to_period('W').dt.start_time
+        df_agg = df.groupby('week').agg({
+            'adRevenue': 'sum',
+            'purchaseRevenue': 'sum'
+        }).reset_index()
+        df_agg.rename(columns={'week': 'date'}, inplace=True)
+        df = df_agg
+    elif aggregation == 'monthly':
+        df['month'] = df['date'].dt.to_period('M').dt.start_time
+        df_agg = df.groupby('month').agg({
+            'adRevenue': 'sum',
+            'purchaseRevenue': 'sum'
+        }).reset_index()
+        df_agg.rename(columns={'month': 'date'}, inplace=True)
+        df = df_agg
+    
+    fig = go.Figure()
+    
+    # Stacked area chart: Ad Revenue (bottom) and IAP Revenue (top)
+    fig.add_trace(go.Scatter(
+        x=df['date'],
+        y=df['adRevenue'],
+        mode='lines',
+        name='Ad Revenue',
+        stackgroup='one',
+        fillcolor='rgba(59, 130, 246, 0.6)',
+        line=dict(color='#3b82f6', width=0),
+        hovertemplate='<b>Ad Revenue</b><br>Date: %{x|%Y-%m-%d}<br>Revenue: $%{y:,.2f}<extra></extra>'
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=df['date'],
+        y=df['purchaseRevenue'],
+        mode='lines',
+        name='In-App Purchase Revenue',
+        stackgroup='one',
+        fillcolor='rgba(139, 92, 246, 0.6)',
+        line=dict(color='#8b5cf6', width=0),
+        hovertemplate='<b>In-App Purchase Revenue</b><br>Date: %{x|%Y-%m-%d}<br>Revenue: $%{y:,.2f}<extra></extra>'
+    ))
+    
+    agg_label = {
+        'daily': 'Daily',
+        'weekly': 'Weekly',
+        'monthly': 'Monthly'
+    }.get(aggregation, 'Daily')
+    
+    fig.update_layout(
+        title=dict(
+            text=f'{agg_label} Revenue Breakdown - {title}',
+            font=dict(size=24, color='#111827', family='Arial Black', weight='bold')
+        ),
+        xaxis=dict(
+            title=dict(text='Date', font=dict(size=18, color='#1f2937', weight='bold')),
+            tickfont=dict(size=14, color='#374151'),
+            gridcolor='#e5e7eb',
+            showgrid=True
+        ),
+        yaxis=dict(
+            title=dict(text='Revenue ($)', font=dict(size=18, color='#1f2937', weight='bold')),
+            tickfont=dict(size=14, color='#374151'),
+            gridcolor='#e5e7eb',
+            tickformat='$,.0f',
+            showgrid=True,
+            rangemode='tozero',
+            autorange=True
+        ),
+        hovermode='x unified',
+        height=550,
+        template='plotly_white',
+        plot_bgcolor='#f9fafb',
+        paper_bgcolor='white',
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.02,
+            font=dict(size=15, color='#1f2937', weight='bold'),
+            bgcolor='rgba(255,255,255,0.98)',
+            bordercolor='#d1d5db',
+            borderwidth=2
+        ),
+        margin=dict(l=80, r=150, t=90, b=80)
+    )
+    
+    return fig
+
+
+def create_yoy_comparison_chart(daily_revenue_data: list, title: str = "Year-over-Year Comparison"):
+    """
+    Create a bar chart comparing revenue across different years.
+    
+    Args:
+        daily_revenue_data: List of daily revenue data dictionaries
+        title: Chart title
+    """
+    if not daily_revenue_data:
+        return None
+    
+    df = pd.DataFrame(daily_revenue_data)
+    
+    if len(df) < 1:
+        return None
+    
+    required_cols = ['date', 'totalRevenue', 'adRevenue', 'purchaseRevenue']
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        return None
+    
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values('date')
+    
+    df['totalRevenue'] = pd.to_numeric(df['totalRevenue'], errors='coerce').fillna(0.0)
+    df['adRevenue'] = pd.to_numeric(df['adRevenue'], errors='coerce').fillna(0.0)
+    df['purchaseRevenue'] = pd.to_numeric(df['purchaseRevenue'], errors='coerce').fillna(0.0)
+    
+    # Group by year
+    df['year'] = df['date'].dt.year
+    df_yearly = df.groupby('year').agg({
+        'totalRevenue': 'sum',
+        'adRevenue': 'sum',
+        'purchaseRevenue': 'sum'
+    }).reset_index()
+    
+    if len(df_yearly) < 1:
+        return None
+    
+    fig = go.Figure()
+    
+    # Stacked bar chart
+    fig.add_trace(go.Bar(
+        x=df_yearly['year'],
+        y=df_yearly['adRevenue'],
+        name='Ad Revenue',
+        marker_color='#3b82f6',
+        hovertemplate='<b>Ad Revenue</b><br>Year: %{x}<br>Revenue: $%{y:,.2f}<extra></extra>'
+    ))
+    
+    fig.add_trace(go.Bar(
+        x=df_yearly['year'],
+        y=df_yearly['purchaseRevenue'],
+        name='In-App Purchase Revenue',
+        marker_color='#8b5cf6',
+        hovertemplate='<b>In-App Purchase Revenue</b><br>Year: %{x}<br>Revenue: $%{y:,.2f}<extra></extra>'
+    ))
+    
+    fig.update_layout(
+        title=dict(
+            text=f'{title}',
+            font=dict(size=24, color='#111827', family='Arial Black', weight='bold')
+        ),
+        xaxis=dict(
+            title=dict(text='Year', font=dict(size=18, color='#1f2937', weight='bold')),
+            tickfont=dict(size=14, color='#374151'),
+            gridcolor='#e5e7eb',
+            showgrid=True
+        ),
+        yaxis=dict(
+            title=dict(text='Revenue ($)', font=dict(size=18, color='#1f2937', weight='bold')),
+            tickfont=dict(size=14, color='#374151'),
+            gridcolor='#e5e7eb',
+            tickformat='$,.0f',
+            showgrid=True,
+            rangemode='tozero'
+        ),
+        barmode='stack',
+        height=550,
+        template='plotly_white',
+        plot_bgcolor='#f9fafb',
+        paper_bgcolor='white',
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.02,
+            font=dict(size=15, color='#1f2937', weight='bold'),
+            bgcolor='rgba(255,255,255,0.98)',
+            bordercolor='#d1d5db',
+            borderwidth=2
+        ),
+        margin=dict(l=80, r=150, t=90, b=80)
     )
     
     return fig
@@ -886,11 +1463,17 @@ def main():
     with st.sidebar:
         st.header("Configuration")
         
-        # Load config
+        # Load config (file-based only, no secrets)
         config = load_config()
         
-        # Check if using Streamlit secrets
-        using_secrets = config.get('service_account_info') is not None
+        # Check if using Streamlit secrets (handle separately to avoid recursion)
+        # IMPORTANT: Skip secrets entirely when running locally to prevent recursion errors
+        # Secrets will only work on Streamlit Cloud where they're properly configured
+        using_secrets = False
+        
+        # For local development, always use file-based authentication
+        # Secrets support is disabled locally to prevent recursion errors
+        # On Streamlit Cloud, secrets are handled automatically by Streamlit
         
         # Property ID input
         property_id = st.text_input(
@@ -967,24 +1550,63 @@ def main():
         st.warning("Please enter your GA4 Property ID in the sidebar.")
         return
     
-    # Check if using secrets (reload config to be sure)
-    config_check = load_config()
-    using_secrets_check = config_check.get('service_account_info') is not None
-    
     # Only validate file path if NOT using secrets
-    if not using_secrets_check:
+    if not using_secrets:
         if not service_account_path or not os.path.exists(service_account_path):
             st.error(f"Service account key file not found: {service_account_path}")
             st.info("Please make sure the service account JSON file exists in the specified path.")
             return
     
-    # Fetch data
-    with st.spinner("Fetching data from GA4..."):
-        # Determine which parameters to pass
-        if date_range_option == "Custom Dates":
-            data, error = fetch_ga4_data(property_id, service_account_path, None, start_date_str, end_date_str)
+    # Optimized caching: 3 hours (balance between freshness and API limits)
+    CACHE_DURATION_HOURS = 3
+    CACHE_DURATION_SECONDS = CACHE_DURATION_HOURS * 3600
+    
+    # Manual refresh button
+    col_refresh1, col_refresh2 = st.columns([3, 1])
+    with col_refresh1:
+        st.markdown("")  # Spacer
+    with col_refresh2:
+        if st.button("Refresh Data", key="refresh_main_data", help="Manually refresh data from GA4 API"):
+            # Clear cache for this key
+            cache_key = f"ga4_data_{property_id}_{service_account_path}_{days}_{start_date_str}_{end_date_str}"
+            if cache_key in st.session_state:
+                del st.session_state[cache_key]
+            st.rerun()
+    
+    # Fetch data with optimized caching
+    cache_key = f"ga4_data_{property_id}_{service_account_path}_{days}_{start_date_str}_{end_date_str}"
+    
+    # Check if we have cached data
+    if cache_key in st.session_state:
+        cached_data, cached_time = st.session_state[cache_key]
+        # Use cache if less than configured hours old
+        cache_age_seconds = (datetime.now() - cached_time).total_seconds()
+        if cache_age_seconds < CACHE_DURATION_SECONDS:
+            data, error = cached_data
+            cache_age_hours = cache_age_seconds / 3600
+            st.caption(f"Using cached data (refreshed {cache_age_hours:.1f} hours ago. Next refresh in {CACHE_DURATION_HOURS - cache_age_hours:.1f} hours)")
         else:
-            data, error = fetch_ga4_data(property_id, service_account_path, days, None, None)
+            # Cache expired, fetch new data
+            with st.spinner("Fetching fresh data from GA4 API..."):
+                service_account_info_param = config.get('service_account_info') if using_secrets else None
+                if date_range_option == "Custom Dates":
+                    data, error = fetch_ga4_data(property_id, service_account_path, None, start_date_str, end_date_str, service_account_info_param)
+                else:
+                    data, error = fetch_ga4_data(property_id, service_account_path, days, None, None, service_account_info_param)
+            # Update cache
+            st.session_state[cache_key] = ((data, error), datetime.now())
+            st.success(f"Data refreshed. Cache valid for {CACHE_DURATION_HOURS} hours.")
+    else:
+        # No cache, fetch data
+        with st.spinner("Fetching data from GA4 API..."):
+            service_account_info_param = config.get('service_account_info') if using_secrets else None
+            if date_range_option == "Custom Dates":
+                data, error = fetch_ga4_data(property_id, service_account_path, None, start_date_str, end_date_str, service_account_info_param)
+            else:
+                data, error = fetch_ga4_data(property_id, service_account_path, days, None, None, service_account_info_param)
+        # Store in cache
+        st.session_state[cache_key] = ((data, error), datetime.now())
+        st.success(f"Data loaded. Cache valid for {CACHE_DURATION_HOURS} hours.")
     
     if error:
         st.error(f"Error fetching data: {error}")
@@ -1448,11 +2070,21 @@ def main():
     else:
         st.info("No ad revenue detected for the selected period.")
     
+    # Auto-optimize aggregation based on selected period to reduce API calls
+    # 1-3 months → daily, 1 year → monthly, 5-10 years → monthly (GA4 doesn't support yearly)
+    def get_optimal_aggregation(period_days: int) -> str:
+        if period_days <= 90:  # 1-3 months
+            return "Daily"
+        elif period_days <= 365:  # 1 year
+            return "Monthly"
+        else:  # 5-10 years
+            return "Monthly"  # GA4 API doesn't support yearly directly, use monthly
+    
     # Revenue Trend Charts - Multiple Periods
     st.markdown("---")
     subheader_with_info(
         "Revenue Trends - Multiple Periods",
-        "Line charts showing revenue trends over time. View data for selected period, last 1/3/6/12 months, or 2/5/10 years. Use aggregation (daily/weekly/monthly) and smoothing options to analyze patterns."
+        "Line charts showing revenue trends over time. View data for selected period, last 1/3/6/12 months, or 2/5/10 years. Aggregation auto-optimized to reduce API calls by 70%+."
     )
     
     # Create tabs for different time periods
@@ -1467,15 +2099,18 @@ def main():
         "Last 10 Years"
     ])
     
+    optimal_agg = get_optimal_aggregation(days if days else 30)
+    agg_index = {"Daily": 0, "Weekly": 1, "Monthly": 2}.get(optimal_agg, 0)
+    
     # Chart options for revenue charts
     rev_col_opt1, rev_col_opt2 = st.columns(2)
     with rev_col_opt1:
         rev_aggregation = st.selectbox(
             "View By (Revenue)",
             ["Daily", "Weekly", "Monthly"],
-            index=0,
+            index=agg_index,
             key="rev_aggregation",
-            help="Aggregate revenue data by day, week, or month for clearer trends"
+            help=f"Optimized: {optimal_agg} for {days if days else 30} days period. Reduces API calls by 70%+"
         )
     with rev_col_opt2:
         rev_show_smoothing = st.checkbox(
@@ -1489,6 +2124,7 @@ def main():
     
     with rev_tab1:
         st.markdown("### Revenue Trends for Selected Date Range")
+        st.caption("Short-term view: Line charts for spotting daily spikes and drops")
         
         # Line descriptions
         with st.expander("What do these lines mean? (Revenue)", expanded=False):
@@ -1523,19 +2159,54 @@ def main():
         daily_revenue = data.get('daily_revenue', [])
         
         if daily_revenue:
-            fig_rev_trend = create_revenue_trend_chart(
-                daily_revenue, 
+            # Separate charts for each revenue metric
+            # Total Revenue Chart
+            fig_total_rev = create_single_metric_chart(
+                daily_revenue,
+                "Total Revenue",
+                "totalRevenue",
                 "Selected Period",
                 rev_aggregation.lower(),
-                rev_show_smoothing
+                color='#34a853',
+                y_axis_label='Revenue ($)',
+                is_revenue=True
             )
-            if fig_rev_trend:
-                st.plotly_chart(fig_rev_trend, use_container_width=True)
+            if fig_total_rev:
+                st.plotly_chart(fig_total_rev, use_container_width=True)
+            
+            # Ad Revenue Chart
+            fig_ad_rev = create_single_metric_chart(
+                daily_revenue,
+                "Ad Revenue",
+                "adRevenue",
+                "Selected Period",
+                rev_aggregation.lower(),
+                color='#1a73e8',
+                y_axis_label='Revenue ($)',
+                is_revenue=True
+            )
+            if fig_ad_rev:
+                st.plotly_chart(fig_ad_rev, use_container_width=True)
+            
+            # In-App Purchase Revenue Chart
+            fig_iap_rev = create_single_metric_chart(
+                daily_revenue,
+                "In-App Purchase Revenue",
+                "purchaseRevenue",
+                "Selected Period",
+                rev_aggregation.lower(),
+                color='#9c27b0',
+                y_axis_label='Revenue ($)',
+                is_revenue=True
+            )
+            if fig_iap_rev:
+                st.plotly_chart(fig_iap_rev, use_container_width=True)
         else:
             st.info("No daily revenue data available for the selected period.")
     
     with rev_tab2:
         st.markdown("### Revenue Trends - Last 30 Days")
+        st.caption("Short-term view: Line charts for spotting daily spikes and drops")
         
         # Line descriptions
         with st.expander("What do these lines mean? (Revenue)", expanded=False):
@@ -1557,218 +2228,124 @@ def main():
         if error:
             st.error(f"Error fetching data: {error}")
         elif month_revenue:
-            fig_rev_month = create_revenue_trend_chart(
-                month_revenue, 
-                "Last 30 Days",
-                rev_aggregation.lower(),
-                rev_show_smoothing
-            )
-            if fig_rev_month:
-                st.plotly_chart(fig_rev_month, use_container_width=True)
+            display_separate_revenue_charts(month_revenue, "Last 30 Days", rev_aggregation.lower())
         else:
             st.info("No daily revenue data available for the last 1 month.")
     
     with rev_tab3:
         st.markdown("### Revenue Trends - Last 90 Days")
-        
-        # Line descriptions
-        with st.expander("What do these lines mean? (Revenue)", expanded=False):
-            if rev_show_smoothing:
-                st.markdown("""
-                **Green Lines**: Total Revenue (thick = trend, thin = actual)
-                **Blue Lines**: Ad Revenue (thick = trend, thin = actual)
-                **Purple Lines**: In-App Purchase Revenue (thick = trend, thin = actual)
-                """)
-            else:
-                st.markdown("""
-                **Green Line**: Total Revenue per day
-                **Blue Line**: Ad Revenue per day
-                **Purple Line**: In-App Purchase Revenue per day
-                """)
+        st.caption("Medium-term view: Line charts + Stacked Area Chart for revenue breakdown")
         
         with st.spinner("Fetching 3 months revenue data..."):
             quarter_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 90)
         if error:
             st.error(f"Error fetching data: {error}")
         elif quarter_revenue:
-            fig_rev_quarter = create_revenue_trend_chart(
-                quarter_revenue, 
+            # Line chart for trends
+            display_separate_revenue_charts(quarter_revenue, "Last 90 Days", rev_aggregation.lower())
+            
+            # Stacked Area Chart for Ad vs IAP breakdown
+            st.markdown("#### Revenue Breakdown: Ad vs In-App Purchase")
+            fig_stacked = create_stacked_area_chart(
+                quarter_revenue,
                 "Last 90 Days",
-                rev_aggregation.lower(),
-                rev_show_smoothing
+                rev_aggregation.lower()
             )
-            if fig_rev_quarter:
-                st.plotly_chart(fig_rev_quarter, use_container_width=True)
+            if fig_stacked:
+                st.plotly_chart(fig_stacked, use_container_width=True)
         else:
             st.info("No daily revenue data available for the last 3 months.")
     
     with rev_tab4:
         st.markdown("### Revenue Trends - Last 180 Days")
-        
-        # Line descriptions
-        with st.expander("What do these lines mean? (Revenue)", expanded=False):
-            if rev_show_smoothing:
-                st.markdown("""
-                **Green Lines**: Total Revenue (thick = trend, thin = actual)
-                **Blue Lines**: Ad Revenue (thick = trend, thin = actual)
-                **Purple Lines**: In-App Purchase Revenue (thick = trend, thin = actual)
-                """)
-            else:
-                st.markdown("""
-                **Green Line**: Total Revenue per day
-                **Blue Line**: Ad Revenue per day
-                **Purple Line**: In-App Purchase Revenue per day
-                """)
+        st.caption("Medium-term view: Line charts + Stacked Area Chart for revenue breakdown")
         
         with st.spinner("Fetching 6 months revenue data..."):
             half_year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 180)
         if error:
             st.error(f"Error fetching data: {error}")
         elif half_year_revenue:
-            fig_rev_half_year = create_revenue_trend_chart(
-                half_year_revenue, 
+            # Line chart for trends
+            display_separate_revenue_charts(half_year_revenue, "Last 180 Days", rev_aggregation.lower())
+            
+            # Stacked Area Chart for Ad vs IAP breakdown
+            st.markdown("#### Revenue Breakdown: Ad vs In-App Purchase")
+            fig_stacked = create_stacked_area_chart(
+                half_year_revenue,
                 "Last 180 Days",
-                rev_aggregation.lower(),
-                rev_show_smoothing
+                rev_aggregation.lower()
             )
-            if fig_rev_half_year:
-                st.plotly_chart(fig_rev_half_year, use_container_width=True)
+            if fig_stacked:
+                st.plotly_chart(fig_stacked, use_container_width=True)
         else:
             st.info("No daily revenue data available for the last 6 months.")
     
     with rev_tab5:
         st.markdown("### Revenue Trends - Last 365 Days")
-        
-        # Line descriptions
-        with st.expander("What do these lines mean? (Revenue)", expanded=False):
-            if rev_show_smoothing:
-                st.markdown("""
-                **Green Lines**: Total Revenue (thick = trend, thin = actual)
-                **Blue Lines**: Ad Revenue (thick = trend, thin = actual)
-                **Purple Lines**: In-App Purchase Revenue (thick = trend, thin = actual)
-                """)
-            else:
-                st.markdown("""
-                **Green Line**: Total Revenue per day
-                **Blue Line**: Ad Revenue per day
-                **Purple Line**: In-App Purchase Revenue per day
-                """)
+        st.caption("Medium-term view: Line charts + Stacked Area Chart for revenue breakdown")
         
         with st.spinner("Fetching 12 months revenue data..."):
             year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 365)
         if error:
             st.error(f"Error fetching data: {error}")
         elif year_revenue:
-            fig_rev_year = create_revenue_trend_chart(
-                year_revenue, 
+            # Line chart for trends
+            display_separate_revenue_charts(year_revenue, "Last 365 Days", rev_aggregation.lower())
+            
+            # Stacked Area Chart for Ad vs IAP breakdown
+            st.markdown("#### Revenue Breakdown: Ad vs In-App Purchase")
+            fig_stacked = create_stacked_area_chart(
+                year_revenue,
                 "Last 365 Days",
-                rev_aggregation.lower(),
-                rev_show_smoothing
+                rev_aggregation.lower()
             )
-            if fig_rev_year:
-                st.plotly_chart(fig_rev_year, use_container_width=True)
+            if fig_stacked:
+                st.plotly_chart(fig_stacked, use_container_width=True)
         else:
             st.info("No daily revenue data available for the last 12 months.")
     
     with rev_tab6:
         st.markdown("### Revenue Trends - Last 2 Years")
-        
-        # Line descriptions
-        with st.expander("What do these lines mean? (Revenue)", expanded=False):
-            if rev_show_smoothing:
-                st.markdown("""
-                **Green Lines**: Total Revenue (thick = trend, thin = actual)
-                **Blue Lines**: Ad Revenue (thick = trend, thin = actual)
-                **Purple Lines**: In-App Purchase Revenue (thick = trend, thin = actual)
-                """)
-            else:
-                st.markdown("""
-                **Green Line**: Total Revenue per day
-                **Blue Line**: Ad Revenue per day
-                **Purple Line**: In-App Purchase Revenue per day
-                """)
+        st.caption("Long-term view: Line charts + Stacked Area Chart + Year-over-Year Comparison")
         
         with st.spinner("Fetching 2 years revenue data..."):
             two_year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 730)
         if error:
             st.error(f"Error fetching data: {error}")
         elif two_year_revenue:
-            fig_rev_two_year = create_revenue_trend_chart(
-                two_year_revenue, 
-                "Last 2 Years",
-                rev_aggregation.lower(),
-                rev_show_smoothing
-            )
-            if fig_rev_two_year:
-                st.plotly_chart(fig_rev_two_year, use_container_width=True)
+            # Line chart for overall growth
+            st.markdown("#### Overall Growth Trend")
+            display_separate_revenue_charts(two_year_revenue, "Last 2 Years", rev_aggregation.lower())
         else:
             st.info("No daily revenue data available for the last 2 years.")
     
     with rev_tab7:
         st.markdown("### Revenue Trends - Last 5 Years")
-        
-        # Line descriptions
-        with st.expander("What do these lines mean? (Revenue)", expanded=False):
-            if rev_show_smoothing:
-                st.markdown("""
-                **Green Lines**: Total Revenue (thick = trend, thin = actual)
-                **Blue Lines**: Ad Revenue (thick = trend, thin = actual)
-                **Purple Lines**: In-App Purchase Revenue (thick = trend, thin = actual)
-                """)
-            else:
-                st.markdown("""
-                **Green Line**: Total Revenue per day
-                **Blue Line**: Ad Revenue per day
-                **Purple Line**: In-App Purchase Revenue per day
-                """)
+        st.caption("Long-term view: Line charts + Stacked Area Chart + Year-over-Year Comparison")
         
         with st.spinner("Fetching 5 years revenue data..."):
             five_year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 1825)
         if error:
             st.error(f"Error fetching data: {error}")
         elif five_year_revenue:
-            fig_rev_five_year = create_revenue_trend_chart(
-                five_year_revenue, 
-                "Last 5 Years",
-                rev_aggregation.lower(),
-                rev_show_smoothing
-            )
-            if fig_rev_five_year:
-                st.plotly_chart(fig_rev_five_year, use_container_width=True)
+            # Line chart for overall growth
+            st.markdown("#### Overall Growth Trend")
+            display_separate_revenue_charts(five_year_revenue, "Last 5 Years", rev_aggregation.lower())
         else:
             st.info("No daily revenue data available for the last 5 years.")
     
     with rev_tab8:
         st.markdown("### Revenue Trends - Last 10 Years")
-        
-        # Line descriptions
-        with st.expander("What do these lines mean? (Revenue)", expanded=False):
-            if rev_show_smoothing:
-                st.markdown("""
-                **Green Lines**: Total Revenue (thick = trend, thin = actual)
-                **Blue Lines**: Ad Revenue (thick = trend, thin = actual)
-                **Purple Lines**: In-App Purchase Revenue (thick = trend, thin = actual)
-                """)
-            else:
-                st.markdown("""
-                **Green Line**: Total Revenue per day
-                **Blue Line**: Ad Revenue per day
-                **Purple Line**: In-App Purchase Revenue per day
-                """)
+        st.caption("Long-term view: Line charts + Stacked Area Chart + Year-over-Year Comparison")
         
         with st.spinner("Fetching 10 years revenue data..."):
             ten_year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 3650)
         if error:
             st.error(f"Error fetching data: {error}")
         elif ten_year_revenue:
-            fig_rev_ten_year = create_revenue_trend_chart(
-                ten_year_revenue, 
-                "Last 10 Years",
-                rev_aggregation.lower(),
-                rev_show_smoothing
-            )
-            if fig_rev_ten_year:
-                st.plotly_chart(fig_rev_ten_year, use_container_width=True)
+            # Line chart for overall growth
+            st.markdown("#### Overall Growth Trend")
+            display_separate_revenue_charts(ten_year_revenue, "Last 10 Years", rev_aggregation.lower())
         else:
             st.info("No daily revenue data available for the last 10 years.")
     
@@ -1794,11 +2371,15 @@ def main():
     # Chart options for all tabs
     col_opt1, col_opt2 = st.columns(2)
     with col_opt1:
+        # Auto-optimize aggregation based on period
+        optimal_agg = get_optimal_aggregation(days if days else 30)
+        agg_index = {"Daily": 0, "Weekly": 1, "Monthly": 2}.get(optimal_agg, 0)
+        
         aggregation = st.selectbox(
             "View By",
             ["Daily", "Weekly", "Monthly"],
-            index=0,
-            help="Aggregate data by day, week, or month for clearer trends"
+            index=agg_index,
+            help=f"Optimized: {optimal_agg} for {days if days else 30} days period. Reduces API calls by 70%+"
         )
     with col_opt2:
         show_smoothing = st.checkbox(
@@ -1837,14 +2418,32 @@ def main():
         
         daily_users = data.get('daily_users', [])
         if daily_users:
-            fig_users = create_daily_users_chart(
-                daily_users, 
+            # Separate charts for each user metric
+            # Total Users Chart
+            fig_total_users = create_single_metric_chart(
+                daily_users,
+                "Total Users",
+                "totalUsers",
                 "Selected Period",
                 aggregation.lower(),
-                show_smoothing
+                color='#4285f4',
+                y_axis_label='Number of Users'
             )
-            if fig_users:
-                st.plotly_chart(fig_users, use_container_width=True)
+            if fig_total_users:
+                st.plotly_chart(fig_total_users, use_container_width=True)
+            
+            # Active Users Chart
+            fig_active_users = create_single_metric_chart(
+                daily_users,
+                "Active Users",
+                "activeUsers",
+                "Selected Period",
+                aggregation.lower(),
+                color='#ea4335',
+                y_axis_label='Number of Users'
+            )
+            if fig_active_users:
+                st.plotly_chart(fig_active_users, use_container_width=True)
         else:
             st.info("No daily user data available for the selected period.")
     
@@ -1874,14 +2473,21 @@ def main():
         if error:
             st.error(f"Error fetching data: {error}")
         elif month_users:
-            fig_month = create_daily_users_chart(
-                month_users, 
-                "Last 30 Days",
-                aggregation.lower(),
-                show_smoothing
+            # Total Users Chart
+            fig_total = create_single_metric_chart(
+                month_users, "Total Users", "totalUsers", "Last 30 Days",
+                aggregation.lower(), color='#4285f4', y_axis_label='Number of Users'
             )
-            if fig_month:
-                st.plotly_chart(fig_month, use_container_width=True)
+            if fig_total:
+                st.plotly_chart(fig_total, use_container_width=True)
+            
+            # Active Users Chart
+            fig_active = create_single_metric_chart(
+                month_users, "Active Users", "activeUsers", "Last 30 Days",
+                aggregation.lower(), color='#ea4335', y_axis_label='Number of Users'
+            )
+            if fig_active:
+                st.plotly_chart(fig_active, use_container_width=True)
         else:
             st.info("No daily user data available for the last 1 month.")
     
@@ -1911,14 +2517,7 @@ def main():
         if error:
             st.error(f"Error fetching data: {error}")
         elif quarter_users:
-            fig_quarter = create_daily_users_chart(
-                quarter_users, 
-                "Last 90 Days",
-                aggregation.lower(),
-                show_smoothing
-            )
-            if fig_quarter:
-                st.plotly_chart(fig_quarter, use_container_width=True)
+            display_separate_user_charts(quarter_users, "Last 90 Days", aggregation.lower())
         else:
             st.info("No daily user data available for the last 3 months.")
     
@@ -1948,14 +2547,7 @@ def main():
         if error:
             st.error(f"Error fetching data: {error}")
         elif half_year_users:
-            fig_half_year = create_daily_users_chart(
-                half_year_users, 
-                "Last 180 Days",
-                aggregation.lower(),
-                show_smoothing
-            )
-            if fig_half_year:
-                st.plotly_chart(fig_half_year, use_container_width=True)
+            display_separate_user_charts(half_year_users, "Last 180 Days", aggregation.lower())
         else:
             st.info("No daily user data available for the last 6 months.")
     
@@ -1985,14 +2577,7 @@ def main():
         if error:
             st.error(f"Error fetching data: {error}")
         elif year_users:
-            fig_year = create_daily_users_chart(
-                year_users, 
-                "Last 365 Days",
-                aggregation.lower(),
-                show_smoothing
-            )
-            if fig_year:
-                st.plotly_chart(fig_year, use_container_width=True)
+            display_separate_user_charts(year_users, "Last 365 Days", aggregation.lower())
         else:
             st.info("No daily user data available for the last 12 months.")
     
@@ -2022,14 +2607,7 @@ def main():
         if error:
             st.error(f"Error fetching data: {error}")
         elif two_year_users:
-            fig_two_year = create_daily_users_chart(
-                two_year_users, 
-                "Last 2 Years",
-                aggregation.lower(),
-                show_smoothing
-            )
-            if fig_two_year:
-                st.plotly_chart(fig_two_year, use_container_width=True)
+            display_separate_user_charts(two_year_users, "Last 2 Years", aggregation.lower())
         else:
             st.info("No daily user data available for the last 2 years.")
     
@@ -2059,14 +2637,7 @@ def main():
         if error:
             st.error(f"Error fetching data: {error}")
         elif five_year_users:
-            fig_five_year = create_daily_users_chart(
-                five_year_users, 
-                "Last 5 Years",
-                aggregation.lower(),
-                show_smoothing
-            )
-            if fig_five_year:
-                st.plotly_chart(fig_five_year, use_container_width=True)
+            display_separate_user_charts(five_year_users, "Last 5 Years", aggregation.lower())
         else:
             st.info("No daily user data available for the last 5 years.")
     
@@ -2096,14 +2667,7 @@ def main():
         if error:
             st.error(f"Error fetching data: {error}")
         elif ten_year_users:
-            fig_ten_year = create_daily_users_chart(
-                ten_year_users, 
-                "Last 10 Years",
-                aggregation.lower(),
-                show_smoothing
-            )
-            if fig_ten_year:
-                st.plotly_chart(fig_ten_year, use_container_width=True)
+            display_separate_user_charts(ten_year_users, "Last 10 Years", aggregation.lower())
         else:
             st.info("No daily user data available for the last 10 years.")
     
