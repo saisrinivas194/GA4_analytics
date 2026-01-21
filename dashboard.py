@@ -1467,13 +1467,30 @@ def main():
         config = load_config()
         
         # Check if using Streamlit secrets (handle separately to avoid recursion)
-        # IMPORTANT: Skip secrets entirely when running locally to prevent recursion errors
-        # Secrets will only work on Streamlit Cloud where they're properly configured
+        # Check if Streamlit secrets are available
         using_secrets = False
+        service_account_info = None
         
-        # For local development, always use file-based authentication
-        # Secrets support is disabled locally to prevent recursion errors
-        # On Streamlit Cloud, secrets are handled automatically by Streamlit
+        try:
+            # Try to access secrets (works on Streamlit Cloud or with .streamlit/secrets.toml)
+            if hasattr(st, 'secrets') and st.secrets:
+                # Check for GA4 service account in secrets (format: secrets.ga4.service_account)
+                if 'ga4' in st.secrets:
+                    ga4_secrets = st.secrets.get('ga4', {})
+                    if 'service_account' in ga4_secrets:
+                        using_secrets = True
+                        service_account_info = dict(ga4_secrets['service_account'])
+                        config['service_account_info'] = service_account_info
+                        st.success("Using credentials from Streamlit secrets")
+                # Also check for direct service_account in secrets
+                elif 'service_account' in st.secrets:
+                    using_secrets = True
+                    service_account_info = dict(st.secrets['service_account'])
+                    config['service_account_info'] = service_account_info
+                    st.success("Using credentials from Streamlit secrets")
+        except (AttributeError, KeyError, RuntimeError, TypeError) as e:
+            # Secrets not available or not configured - will use file-based auth
+            using_secrets = False
         
         # Property ID input
         property_id = st.text_input(
@@ -1551,9 +1568,10 @@ def main():
         return
     
     # Only validate file path if NOT using secrets
+    # Skip file validation entirely if using Streamlit secrets
     if not using_secrets:
         if not service_account_path:
-            st.error("Service account key path is required.")
+            st.error("Service account key path is required when not using Streamlit secrets.")
             return
         
         # Resolve relative paths - check both absolute and relative to current directory
@@ -1565,12 +1583,15 @@ def main():
                 service_account_path = os.path.join(os.getcwd(), service_account_path)
             else:
                 st.error(f"Service account key file not found: {service_account_path}")
-                st.info("Please make sure the service account JSON file exists in the specified path.")
+                st.info("Please make sure the service account JSON file exists in the specified path, or configure Streamlit secrets in Settings → Secrets.")
                 return
         elif not os.path.exists(service_account_path):
             st.error(f"Service account key file not found: {service_account_path}")
-            st.info("Please make sure the service account JSON file exists in the specified path.")
+            st.info("Please make sure the service account JSON file exists in the specified path, or configure Streamlit secrets in Settings → Secrets.")
             return
+    else:
+        # Using secrets - set service_account_path to None to avoid file checks
+        service_account_path = None
     
     # Optimized caching: 3 hours (balance between freshness and API limits)
     CACHE_DURATION_HOURS = 3
