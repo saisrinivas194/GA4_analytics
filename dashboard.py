@@ -1552,7 +1552,22 @@ def main():
     
     # Only validate file path if NOT using secrets
     if not using_secrets:
-        if not service_account_path or not os.path.exists(service_account_path):
+        if not service_account_path:
+            st.error("Service account key path is required.")
+            return
+        
+        # Resolve relative paths - check both absolute and relative to current directory
+        if not os.path.isabs(service_account_path):
+            # Try relative to current working directory
+            if os.path.exists(service_account_path):
+                pass  # File exists
+            elif os.path.exists(os.path.join(os.getcwd(), service_account_path)):
+                service_account_path = os.path.join(os.getcwd(), service_account_path)
+            else:
+                st.error(f"Service account key file not found: {service_account_path}")
+                st.info("Please make sure the service account JSON file exists in the specified path.")
+                return
+        elif not os.path.exists(service_account_path):
             st.error(f"Service account key file not found: {service_account_path}")
             st.info("Please make sure the service account JSON file exists in the specified path.")
             return
