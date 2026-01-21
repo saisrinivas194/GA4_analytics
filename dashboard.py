@@ -266,24 +266,32 @@ def fetch_comparison_data(property_id: str, service_account_path: str, period_da
 
 
 # Removed @st.cache_data decorator to avoid recursion errors
-def fetch_daily_users_for_period(property_id: str, service_account_path: str, period_days: int):
+def fetch_daily_users_for_period(property_id: str, service_account_path: Optional[str] = None, period_days: int = 30, service_account_info: Optional[dict] = None):
     """
     Fetch daily users data for a specific period.
     
     Args:
         property_id: GA4 Property ID
-        service_account_path: Path to service account JSON
+        service_account_path: Path to service account JSON (optional if service_account_info provided)
         period_days: Number of days for the period
+        service_account_info: Service account credentials dict (for Streamlit secrets, optional)
     
     Returns:
         List of daily user data dictionaries
     """
     try:
-        pipeline = GA4Pipeline(
-            property_id=property_id,
-            service_account_path=service_account_path,
-            date_range_days=period_days
-        )
+        if service_account_info:
+            pipeline = GA4Pipeline(
+                property_id=property_id,
+                service_account_info=service_account_info,
+                date_range_days=period_days
+            )
+        else:
+            pipeline = GA4Pipeline(
+                property_id=property_id,
+                service_account_path=service_account_path,
+                date_range_days=period_days
+            )
         daily_users = pipeline.fetch_daily_users(period_days)
         return daily_users, None
     except Exception as e:
@@ -291,24 +299,32 @@ def fetch_daily_users_for_period(property_id: str, service_account_path: str, pe
 
 
 # Removed @st.cache_data decorator to avoid recursion errors
-def fetch_daily_revenue_for_period(property_id: str, service_account_path: str, period_days: int):
+def fetch_daily_revenue_for_period(property_id: str, service_account_path: Optional[str] = None, period_days: int = 30, service_account_info: Optional[dict] = None):
     """
     Fetch daily revenue data for a specific period.
     
     Args:
         property_id: GA4 Property ID
-        service_account_path: Path to service account JSON
+        service_account_path: Path to service account JSON (optional if service_account_info provided)
         period_days: Number of days for the period
+        service_account_info: Service account credentials dict (for Streamlit secrets, optional)
     
     Returns:
         List of daily revenue data dictionaries
     """
     try:
-        pipeline = GA4Pipeline(
-            property_id=property_id,
-            service_account_path=service_account_path,
-            date_range_days=period_days
-        )
+        if service_account_info:
+            pipeline = GA4Pipeline(
+                property_id=property_id,
+                service_account_info=service_account_info,
+                date_range_days=period_days
+            )
+        else:
+            pipeline = GA4Pipeline(
+                property_id=property_id,
+                service_account_path=service_account_path,
+                date_range_days=period_days
+            )
         daily_revenue = pipeline.fetch_daily_revenue(period_days)
         return daily_revenue, None
     except Exception as e:
@@ -1420,7 +1436,7 @@ def section_header_with_info(title: str, info_text: str, info_key: str = None):
                          background: transparent;
                          transition: all 0.2s ease;
                          font-weight: 500;"
-                  data-tooltip="{info_text_escaped}">ℹ</span>
+                  data-tooltip="{info_text_escaped}">i</span>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1447,7 +1463,7 @@ def subheader_with_info(title: str, info_text: str, info_key: str = None):
                          background: transparent;
                          transition: all 0.2s ease;
                          font-weight: 500;"
-                  data-tooltip="{info_text_escaped}">ℹ</span>
+                  data-tooltip="{info_text_escaped}">i</span>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1501,7 +1517,7 @@ def main():
         
         # Service account path (only show if not using secrets)
         if using_secrets:
-            st.info("🔐 Using credentials from Streamlit secrets")
+            st.info("Using credentials from Streamlit secrets")
             service_account_path = None
         else:
             service_account_path = st.text_input(
@@ -2260,7 +2276,7 @@ def main():
                 """)
         
         with st.spinner("Fetching 1 month revenue data..."):
-            month_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 30)
+            month_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 30, config.get('service_account_info'))
         if error:
             st.error(f"Error fetching data: {error}")
         elif month_revenue:
@@ -2273,7 +2289,7 @@ def main():
         st.caption("Medium-term view: Line charts + Stacked Area Chart for revenue breakdown")
         
         with st.spinner("Fetching 3 months revenue data..."):
-            quarter_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 90)
+            quarter_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 90, config.get('service_account_info'))
         if error:
             st.error(f"Error fetching data: {error}")
         elif quarter_revenue:
@@ -2297,7 +2313,7 @@ def main():
         st.caption("Medium-term view: Line charts + Stacked Area Chart for revenue breakdown")
         
         with st.spinner("Fetching 6 months revenue data..."):
-            half_year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 180)
+            half_year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 180, config.get('service_account_info'))
         if error:
             st.error(f"Error fetching data: {error}")
         elif half_year_revenue:
@@ -2321,7 +2337,7 @@ def main():
         st.caption("Medium-term view: Line charts + Stacked Area Chart for revenue breakdown")
         
         with st.spinner("Fetching 12 months revenue data..."):
-            year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 365)
+            year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 365, config.get('service_account_info'))
         if error:
             st.error(f"Error fetching data: {error}")
         elif year_revenue:
@@ -2345,7 +2361,7 @@ def main():
         st.caption("Long-term view: Line charts + Stacked Area Chart + Year-over-Year Comparison")
         
         with st.spinner("Fetching 2 years revenue data..."):
-            two_year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 730)
+            two_year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 730, config.get('service_account_info'))
         if error:
             st.error(f"Error fetching data: {error}")
         elif two_year_revenue:
@@ -2360,7 +2376,7 @@ def main():
         st.caption("Long-term view: Line charts + Stacked Area Chart + Year-over-Year Comparison")
         
         with st.spinner("Fetching 5 years revenue data..."):
-            five_year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 1825)
+            five_year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 1825, config.get('service_account_info'))
         if error:
             st.error(f"Error fetching data: {error}")
         elif five_year_revenue:
@@ -2375,7 +2391,7 @@ def main():
         st.caption("Long-term view: Line charts + Stacked Area Chart + Year-over-Year Comparison")
         
         with st.spinner("Fetching 10 years revenue data..."):
-            ten_year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 3650)
+            ten_year_revenue, error = fetch_daily_revenue_for_period(property_id, service_account_path, 3650, config.get('service_account_info'))
         if error:
             st.error(f"Error fetching data: {error}")
         elif ten_year_revenue:
@@ -2505,7 +2521,7 @@ def main():
                 """)
         
         with st.spinner("Fetching 1 month data..."):
-            month_users, error = fetch_daily_users_for_period(property_id, service_account_path, 30)
+            month_users, error = fetch_daily_users_for_period(property_id, service_account_path, 30, config.get('service_account_info'))
         if error:
             st.error(f"Error fetching data: {error}")
         elif month_users:
@@ -2549,7 +2565,7 @@ def main():
                 """)
         
         with st.spinner("Fetching 3 months data..."):
-            quarter_users, error = fetch_daily_users_for_period(property_id, service_account_path, 90)
+            quarter_users, error = fetch_daily_users_for_period(property_id, service_account_path, 90, config.get('service_account_info'))
         if error:
             st.error(f"Error fetching data: {error}")
         elif quarter_users:
@@ -2579,7 +2595,7 @@ def main():
                 """)
         
         with st.spinner("Fetching 6 months data..."):
-            half_year_users, error = fetch_daily_users_for_period(property_id, service_account_path, 180)
+            half_year_users, error = fetch_daily_users_for_period(property_id, service_account_path, 180, config.get('service_account_info'))
         if error:
             st.error(f"Error fetching data: {error}")
         elif half_year_users:
@@ -2609,7 +2625,7 @@ def main():
                 """)
         
         with st.spinner("Fetching 12 months data..."):
-            year_users, error = fetch_daily_users_for_period(property_id, service_account_path, 365)
+            year_users, error = fetch_daily_users_for_period(property_id, service_account_path, 365, config.get('service_account_info'))
         if error:
             st.error(f"Error fetching data: {error}")
         elif year_users:
@@ -2639,7 +2655,7 @@ def main():
                 """)
         
         with st.spinner("Fetching 2 years data..."):
-            two_year_users, error = fetch_daily_users_for_period(property_id, service_account_path, 730)
+            two_year_users, error = fetch_daily_users_for_period(property_id, service_account_path, 730, config.get('service_account_info'))
         if error:
             st.error(f"Error fetching data: {error}")
         elif two_year_users:
@@ -2669,7 +2685,7 @@ def main():
                 """)
         
         with st.spinner("Fetching 5 years data..."):
-            five_year_users, error = fetch_daily_users_for_period(property_id, service_account_path, 1825)
+            five_year_users, error = fetch_daily_users_for_period(property_id, service_account_path, 1825, config.get('service_account_info'))
         if error:
             st.error(f"Error fetching data: {error}")
         elif five_year_users:
@@ -2699,7 +2715,7 @@ def main():
                 """)
         
         with st.spinner("Fetching 10 years data..."):
-            ten_year_users, error = fetch_daily_users_for_period(property_id, service_account_path, 3650)
+            ten_year_users, error = fetch_daily_users_for_period(property_id, service_account_path, 3650, config.get('service_account_info'))
         if error:
             st.error(f"Error fetching data: {error}")
         elif ten_year_users:
